@@ -3,12 +3,10 @@ import time
 import threading
 import uuid
 import platform
-import os
 import subprocess
 import requests
 import pyperclip
 import configparser
-from datetime import datetime
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # =======================

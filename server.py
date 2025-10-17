@@ -1,6 +1,4 @@
-import json
-import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 import uvicorn
 import configparser
@@ -24,8 +22,8 @@ clipboard_store = {
 async def upload_clipboard(request: Request):
     data = await request.json()
     clipboard_store["content"] = data.get("content", "")
-    print(f"↑ 已上传: {clipboard_store['content'][:30]!r}")
-    clipboard_store["updated_at"] = datetime.utcnow().isoformat()
+    print(f"↑ 已上传({len(clipboard_store['content'])}字): {clipboard_store['content'][:30]!r}")
+    clipboard_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     clipboard_store["device_id"] = data.get("device_id")
     return {"status": "ok", "updated_at": clipboard_store["updated_at"]}
 
