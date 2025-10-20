@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import threading
 import uuid
@@ -12,8 +13,33 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 # =======================
 # 读取配置文件
 # =======================
+def get_config_path():
+    """获取配置文件路径（兼容打包后的应用）"""
+    # 优先级1: 可执行文件所在目录（打包后）
+    if getattr(sys, 'frozen', False):
+        # Nuitka 打包后
+        exe_dir = os.path.dirname(sys.executable)
+        config_path = os.path.join(exe_dir, "config.ini")
+        if os.path.exists(config_path):
+            return config_path
+    
+    # 优先级2: 当前工作目录
+    if os.path.exists("config.ini"):
+        return "config.ini"
+    
+    # 优先级3: 脚本所在目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, "config.ini")
+    if os.path.exists(config_path):
+        return config_path
+    
+    # 未找到配置文件，返回默认路径
+    return "config.ini"
+
 config = configparser.ConfigParser()
-config.read("config.ini", encoding="utf-8")
+config_file_path = get_config_path()
+config.read(config_file_path, encoding="utf-8")
+print(f"📝 配置文件路径: {config_file_path}")
 
 SERVER_URL = config.get("client", "server_url", fallback="http://127.0.0.1:8000")
 SYNC_INTERVAL = config.getfloat("client", "sync_interval", fallback=1.0)
