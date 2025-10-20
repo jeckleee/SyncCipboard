@@ -112,6 +112,11 @@ cp my_config.ini client_gui.build/client_gui.app/Contents/MacOS/config.ini
 
 ### 默认配置内容
 ```ini
+[global]
+app_name = SyncClipboard
+app_version = 1.0.0_20251020
+app_icon =   ; 可为空，留空则使用系统默认图标
+
 [server]
 host = 0.0.0.0
 port = 8000
@@ -122,6 +127,11 @@ sync_interval = 1
 enable_sound = true
 enable_popup = true
 ```
+
+#### 全局配置说明
+- **app_name**：应用显示名称，会在 Finder、托盘图标等处显示
+- **app_version**：应用版本号，会显示在应用信息中
+- **app_icon**：应用图标路径（.icns 文件），留空使用默认图标
 
 ### 分发建议
 ```
@@ -210,21 +220,25 @@ xattr -cr client_gui.build/client_gui.app
 | `--output-dir` | 指定输出目录 |
 
 ### 可选参数
+
+**注意**：构建脚本会自动从 `config.ini` 读取以下参数，通常无需手动指定：
+- `--macos-app-name`：从 `[global] app_name` 读取
+- `--macos-app-version`：从 `[global] app_version` 读取
+- `--macos-app-icon`：从 `[global] app_icon` 读取
+
+如需手动指定其他参数：
 ```bash
-# 添加应用图标
---macos-app-icon=icon.icns
-
-# 设置应用名称
---macos-app-name="剪贴板同步客户端"
-
-# 设置应用版本
---macos-app-version=1.0.0
-
 # 指定签名身份（需要开发者证书）
 --macos-sign-identity="Developer ID Application: Your Name"
 
 # 禁用控制台窗口（GUI 应用）
 --disable-console
+
+# 指定最低 macOS 版本
+--macos-target-arch=arm64
+
+# 启用链接时优化
+--lto=yes
 ```
 
 ## 🎯 性能优化建议

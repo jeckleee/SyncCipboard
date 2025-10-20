@@ -23,12 +23,22 @@ pip install nuitka zstandard ordered-set
 在打包前修改 `config.ini`：
 
 ```ini
+[global]
+app_name = SyncClipboard              # 应用显示名称
+app_version = 1.0.0_20251020          # 应用版本号
+app_icon = icon.icns                  # 应用图标（可选，留空使用默认）
+
 [client]
 server_url = http://YOUR_SERVER_IP:8000  # 修改为实际服务器地址
 sync_interval = 1
 enable_sound = true
 enable_popup = true
 ```
+
+**全局配置说明**：
+- `app_name`：会显示在 Finder、托盘提示等处
+- `app_version`：会包含在应用包的元数据中
+- `app_icon`：自定义应用图标路径（.icns 格式），留空使用默认图标
 
 ### 3️⃣ 执行构建
 

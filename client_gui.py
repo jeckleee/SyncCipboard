@@ -41,6 +41,12 @@ config_file_path = get_config_path()
 config.read(config_file_path, encoding="utf-8")
 print(f"📝 配置文件路径: {config_file_path}")
 
+# 全局配置
+APP_NAME = config.get("global", "app_name", fallback="SyncClipboard")
+APP_VERSION = config.get("global", "app_version", fallback="1.0.0")
+APP_ICON = config.get("global", "app_icon", fallback="")
+
+# 客户端配置
 SERVER_URL = config.get("client", "server_url", fallback="http://127.0.0.1:8000")
 SYNC_INTERVAL = config.getfloat("client", "sync_interval", fallback=1.0)
 ENABLE_SOUND = config.getboolean("client", "enable_sound", fallback=True)
@@ -145,7 +151,7 @@ def sync_from_server(tray_app):
 class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def __init__(self, icon, parent=None):
         super(ClipboardTrayApp, self).__init__(icon, parent)
-        self.setToolTip("📋 剪贴板同步客户端")
+        self.setToolTip(f"📋 {APP_NAME} v{APP_VERSION}")
         self.menu = QtWidgets.QMenu(parent)
 
         # 查看当前剪贴板
@@ -171,8 +177,8 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         self.show()
         if ENABLE_POPUP:
             self.showMessage(
-                "📋 剪贴板同步",
-                f"客户端已启动（同步间隔 {SYNC_INTERVAL}s）",
+                f"📋 {APP_NAME}",
+                f"v{APP_VERSION} 已启动（同步间隔 {SYNC_INTERVAL}s）",
                 QtWidgets.QSystemTrayIcon.Information,
                 2500
             )
@@ -204,9 +210,18 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
 # =======================
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    icon = QtGui.QIcon.fromTheme("edit-paste")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    
+    # 加载应用图标
+    if APP_ICON and os.path.exists(APP_ICON):
+        icon = QtGui.QIcon(APP_ICON)
+    else:
+        icon = QtGui.QIcon.fromTheme("edit-paste")
+    
     tray_app = ClipboardTrayApp(icon)
-    print(f"🧩 剪贴板同步客户端已启动 (设备ID: {DEVICE_ID})")
+    print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动")
+    print(f"📱 设备ID: {DEVICE_ID}")
     print(f"🔗 服务端地址: {SERVER_URL}")
     sys.exit(app.exec_())
 
