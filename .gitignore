@@ -1,0 +1,311 @@
+# ====================
+# Python
+# ====================
+# 字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发 / 打包
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# 测试覆盖率
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+
+# 翻译
+*.mo
+*.pot
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Sphinx 文档
+docs/_build/
+
+# PyBuilder
+target/
+
+# IPython
+profile_default/
+ipython_config.py
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# ====================
+# Nuitka 构建产物
+# ====================
+# Nuitka 构建目录
+*.build/
+*.dist/
+*.onefile-build/
+build_nuitka/
+client_gui.build/
+client_gui.dist/
+client_gui.onefile-build/
+
+# Nuitka 生成的二进制文件
+*.bin
+client_gui.bin
+server.bin
+
+# Nuitka 日志
+build.log
+nuitka-crash-report.xml
+
+# ccache
+.ccache/
+
+# ====================
+# macOS
+# ====================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# 缩略图
+._*
+
+# 文件系统元数据
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# 目录配置
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# macOS 应用包（构建产物）
+*.app/
+
+# ====================
+# Windows
+# ====================
+# Windows 缩略图缓存
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Windows 系统文件
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# ====================
+# Linux
+# ====================
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ====================
+# 项目特定
+# ====================
+# 配置文件（可选：如果不想提交个人配置）
+# config.ini
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+temp/
+tmp/
+*.tmp
+*.temp
+
+# 备份文件
+*.bak
+*.backup
+*~
+
+# 压缩包（分发产物）
+*.zip
+*.tar.gz
+*.dmg
+*.pkg
+
+# 测试文件
+test_*.py
+*_test.py
+tests/__pycache__/
+
+# 本地开发文件
+.env
+.env.local
+.env.*.local
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# ====================
+# Git 相关
+# ====================
+*.orig
+*.rej
+.git-rewrite/
+
+# ====================
+# 其他
+# ====================
+# 编辑器备份
+.*.swp
+.*.swo
+*~
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# Emacs
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# 性能分析
+*.prof
+*.lprof
+*.pyprof
+
+# 调试文件
+*.dSYM/
+
+# ====================
+# 分发相关
+# ====================
+# 分发包目录
+dist_package/
+release/
+releases/
+
+# DMG 临时文件
+.Trash/
+
+# 安装包
+SyncClipboard-*.zip
+SyncClipboard-*.dmg
+*-Installer.dmg
+
