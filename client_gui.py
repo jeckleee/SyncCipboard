@@ -11,6 +11,7 @@ import configparser
 import base64
 import tempfile
 from pathlib import Path
+from io import BytesIO
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # =======================
@@ -71,7 +72,9 @@ else:
 DEVICE_ID = f"{platform.node()}-{uuid.uuid4().hex[:6]}"
 last_clipboard_text = ""
 last_clipboard_files = []  # 记录上次的文件列表
+last_clipboard_image_hash = None  # 记录上次图片的哈希值
 last_received_file = None  # 记录最后接收的文件路径，避免重复上传
+last_received_image_hash = None  # 记录最后接收的图片哈希，避免重复上传
 last_received_time = 0  # 记录接收时间
 last_sync_time = None
 stop_flag = False
@@ -190,6 +193,82 @@ def set_clipboard_file(file_path):
         return False
 
 # =======================
+# 图片处理辅助函数
+# =======================
+def get_clipboard_image():
+    """获取剪贴板中的图片"""
+    try:
+        clipboard = QtWidgets.QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        if mime_data.hasImage():
+            image = clipboard.image()
+            if not image.isNull():
+                return image
+    except Exception as e:
+        print(f"❌ 获取剪贴板图片失败: {e}")
+    return None
+
+def image_to_base64(image):
+    """将QImage转换为Base64编码的PNG"""
+    try:
+        buffer = BytesIO()
+        # 转换为PNG格式
+        byte_array = QtCore.QByteArray()
+        buffer_qt = QtCore.QBuffer(byte_array)
+        buffer_qt.open(QtCore.QIODevice.WriteOnly)
+        image.save(buffer_qt, "PNG")
+        buffer_qt.close()
+        
+        # Base64编码
+        return base64.b64encode(byte_array.data()).decode('utf-8')
+    except Exception as e:
+        print(f"❌ 图片编码失败: {e}")
+        return None
+
+def base64_to_image(base64_data):
+    """将Base64数据转换为QImage"""
+    try:
+        image_data = base64.b64decode(base64_data)
+        image = QtGui.QImage()
+        image.loadFromData(image_data)
+        return image if not image.isNull() else None
+    except Exception as e:
+        print(f"❌ 图片解码失败: {e}")
+        return None
+
+def set_clipboard_image(image):
+    """将图片设置到剪贴板（仅用于主线程）"""
+    try:
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setImage(image)
+        return True
+    except Exception as e:
+        print(f"❌ 设置图片到剪贴板失败: {e}")
+        return False
+
+def get_image_hash(image):
+    """计算图片的哈希值（用于比较）"""
+    try:
+        # 使用图片尺寸和部分像素数据生成简单哈希
+        width = image.width()
+        height = image.height()
+        
+        # 获取图片数据
+        byte_array = QtCore.QByteArray()
+        buffer = QtCore.QBuffer(byte_array)
+        buffer.open(QtCore.QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        buffer.close()
+        
+        # 计算哈希
+        import hashlib
+        return hashlib.md5(byte_array.data()).hexdigest()
+    except Exception as e:
+        print(f"⚠️  图片哈希计算失败: {e}")
+        return None
+
+# =======================
 # 系统提示音
 # =======================
 def play_sound():
@@ -210,10 +289,40 @@ def play_sound():
 # =======================
 # 剪贴板同步逻辑
 # =======================
-def upload_clipboard(tray_app, content_type="text", text="", file_path=None):
+def upload_clipboard(tray_app, content_type="text", text="", file_path=None, image=None):
     """上传剪贴板内容到服务端"""
     try:
-        if content_type == "file" and file_path:
+        if content_type == "image" and image:
+            # 上传图片
+            image_data = image_to_base64(image)
+            if image_data is None:
+                print(f"❌ 图片编码失败")
+                return
+            
+            image_size = len(image_data)
+            width = image.width()
+            height = image.height()
+            
+            requests.post(f"{SERVER_URL}/upload", json={
+                "device_id": DEVICE_ID,
+                "content_type": "image",
+                "image_data": image_data,
+                "image_width": width,
+                "image_height": height,
+                "image_size": image_size
+            }, timeout=15)
+            
+            if ENABLE_POPUP:
+                tray_app.safe_notify(
+                    "📤 图片同步",
+                    f"已上传: {width}x{height} ({image_size/1024:.1f}KB)",
+                    QtWidgets.QSystemTrayIcon.Information,
+                    2000
+                )
+            play_sound()
+            print(f"↑ 已上传图片: {width}x{height} ({image_size/1024:.1f}KB)")
+            
+        elif content_type == "file" and file_path:
             # 上传文件
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
@@ -271,7 +380,8 @@ def fetch_clipboard():
 
 def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
-    global last_clipboard_text, last_clipboard_files, last_received_file, last_received_time
+    global last_clipboard_text, last_clipboard_files, last_clipboard_image_hash
+    global last_received_file, last_received_image_hash, last_received_time
     
     # macOS调试模式
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
@@ -328,19 +438,65 @@ def clipboard_watcher(tray_app):
                                 3000
                             )
             elif not current_files:
-                # 剪贴板中没有文件，检查文本
-                current_text = pyperclip.paste()
-                if current_text != last_clipboard_text:
-                    last_clipboard_text = current_text
-                    last_clipboard_files = []  # 清空文件记录
-                    upload_clipboard(tray_app, content_type="text", text=current_text)
+                # 剪贴板中没有文件，检查图片
+                current_image = get_clipboard_image()
+                
+                if current_image:
+                    # 有图片数据
+                    image_hash = get_image_hash(current_image)
+                    
+                    if image_hash and image_hash != last_clipboard_image_hash:
+                        # 图片发生变化
+                        
+                        # 检查是否是刚接收的图片（避免循环上传）
+                        if last_received_image_hash and image_hash == last_received_image_hash:
+                            elapsed = time.time() - last_received_time
+                            print(f"⏭️  跳过刚接收的图片 (接收后 {elapsed:.1f}秒)")
+                            last_clipboard_image_hash = image_hash
+                            continue
+                        
+                        last_clipboard_image_hash = image_hash
+                        last_clipboard_files = []
+                        
+                        # 检查图片大小
+                        image_data = image_to_base64(current_image)
+                        if image_data:
+                            image_size = len(image_data)
+                            
+                            # 使用文件大小限制（如果启用）
+                            if MAX_FILE_SIZE is None:
+                                print(f"⏭️  检测到图片，但文件同步已禁用")
+                            elif MAX_FILE_SIZE == 0 or image_size <= MAX_FILE_SIZE:
+                                # 可以同步
+                                upload_clipboard(tray_app, content_type="image", image=current_image)
+                            else:
+                                # 图片过大
+                                max_mb = MAX_FILE_SIZE / (1024 * 1024)
+                                image_mb = image_size / (1024 * 1024)
+                                print(f"⚠️  图片过大: {current_image.width()}x{current_image.height()} ({image_mb:.1f}MB > {max_mb:.1f}MB)")
+                                if ENABLE_POPUP:
+                                    tray_app.safe_notify(
+                                        "⚠️  图片过大",
+                                        f"{current_image.width()}x{current_image.height()}\n大小 {image_mb:.1f}MB 超出限制 {max_mb:.1f}MB",
+                                        QtWidgets.QSystemTrayIcon.Warning,
+                                        3000
+                                    )
+                else:
+                    # 没有图片，检查文本
+                    current_text = pyperclip.paste()
+                    if current_text != last_clipboard_text:
+                        last_clipboard_text = current_text
+                        last_clipboard_files = []
+                        last_clipboard_image_hash = None
+                        upload_clipboard(tray_app, content_type="text", text=current_text)
         except Exception as e:
             print("❌ 剪贴板监听错误:", e)
         time.sleep(0.5)
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
-    global last_sync_time, last_clipboard_text, last_clipboard_files, last_received_file, last_received_time
+    global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_image_hash
+    global last_received_file, last_received_image_hash, last_received_time
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
@@ -350,7 +506,37 @@ def sync_from_server(tray_app):
                 if data.get("device_id") != DEVICE_ID:
                     content_type = data.get("content_type", "text")
                     
-                    if content_type == "file":
+                    if content_type == "image":
+                        # 处理图片同步
+                        image_data = data.get("image_data")
+                        image_width = data.get("image_width", 0)
+                        image_height = data.get("image_height", 0)
+                        image_size = data.get("image_size", 0)
+                        
+                        if image_data:
+                            # 解码图片
+                            image = base64_to_image(image_data)
+                            if image:
+                                # 记录接收的图片哈希，避免循环上传
+                                image_hash = get_image_hash(image)
+                                last_received_image_hash = image_hash
+                                last_received_time = time.time()
+                                
+                                # 使用线程安全的方法设置图片到剪贴板
+                                tray_app.safe_set_image(image)
+                                last_clipboard_image_hash = image_hash
+                                last_clipboard_files = []
+                                print(f"↓ 从服务端同步图片: {image_width}x{image_height} ({image_size/1024:.1f}KB)")
+                                if ENABLE_POPUP:
+                                    tray_app.safe_notify(
+                                        "📥 图片同步",
+                                        f"已接收: {image_width}x{image_height}\n💡 按 Ctrl+V 可直接粘贴",
+                                        QtWidgets.QSystemTrayIcon.Information,
+                                        4000
+                                    )
+                                play_sound()
+                                
+                    elif content_type == "file":
                         # 处理文件同步
                         file_name = data.get("file_name")
                         file_data = data.get("file_data")
@@ -403,6 +589,7 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     # 定义自定义信号（必须在类级别定义）
     notify_signal = QtCore.pyqtSignal(str, str, int, int)  # title, message, icon, duration
     set_file_signal = QtCore.pyqtSignal(str)  # file_path - 在主线程设置文件到剪贴板
+    set_image_signal = QtCore.pyqtSignal(object)  # QImage - 在主线程设置图片到剪贴板
     
     def __init__(self, icon, parent=None):
         super(ClipboardTrayApp, self).__init__(icon, parent)
@@ -416,6 +603,7 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         # 连接信号到槽函数
         self.notify_signal.connect(self._show_notification)
         self.set_file_signal.connect(self._set_file_to_clipboard)
+        self.set_image_signal.connect(self._set_image_to_clipboard)
         
         # Windows特定：设置AppUserModelID
         if platform.system() == "Windows":
@@ -504,6 +692,24 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def safe_set_file(self, file_path):
         """线程安全的文件设置方法"""
         self.set_file_signal.emit(file_path)
+    
+    def _set_image_to_clipboard(self, image):
+        """在主线程中设置图片到剪贴板（槽函数）"""
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+            clipboard.setImage(image)
+            
+            print(f"✅ 图片已设置到剪贴板: {image.width()}x{image.height()}")
+            print(f"💡 现在可以按 Ctrl+V 粘贴图片")
+            
+        except Exception as e:
+            print(f"❌ 设置图片到剪贴板失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def safe_set_image(self, image):
+        """线程安全的图片设置方法"""
+        self.set_image_signal.emit(image)
 
     def show_clipboard_content(self):
         content = pyperclip.paste()
