@@ -79,6 +79,7 @@ last_received_file = None  # 记录最后接收的文件路径（用于文件比
 last_received_time = 0  # 记录接收时间
 last_sync_time = None
 stop_flag = False
+is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
 
 # 接收文件后的保护时间（秒）- 在此期间相同文件不会被上传
 RECEIVED_FILE_PROTECTION_TIME = 3
@@ -411,17 +412,25 @@ def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
     global last_clipboard_text, last_clipboard_files, last_clipboard_hash
     global last_received_file, last_received_hash, last_received_time
+    global is_setting_clipboard
     
     # macOS调试模式
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
     
     while not stop_flag:
         try:
+            # 检查是否正在设置剪贴板（优先级最高）
+            if is_setting_clipboard:
+                time.sleep(0.3)
+                continue
+            
             # 检查是否在保护期内（接收内容后的3秒内不检测剪贴板变化）
             if last_received_time > 0:
                 elapsed = time.time() - last_received_time
                 if elapsed <= RECEIVED_FILE_PROTECTION_TIME:
                     # 保护期内，跳过剪贴板检测
+                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                        print(f"🛡️  保护期中 ({elapsed:.1f}s / {RECEIVED_FILE_PROTECTION_TIME}s)")
                     time.sleep(0.3)
                     continue
                 else:
@@ -547,8 +556,9 @@ def sync_from_server(tray_app):
                             # 解码图片
                             image = base64_to_image(image_data)
                             if image:
-                                # 必须在设置到剪贴板之前就更新所有哈希值
-                                # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时哈希还未更新
+                                # 必须在设置到剪贴板之前就更新所有状态
+                                # 设置标志：正在设置剪贴板（让clipboard_watcher跳过检测）
+                                is_setting_clipboard = True
                                 last_received_hash = content_hash
                                 last_clipboard_hash = content_hash
                                 last_received_time = time.time()
@@ -583,7 +593,7 @@ def sync_from_server(tray_app):
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
                                 # 必须在设置到剪贴板之前就更新状态
-                                # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时状态还未更新
+                                is_setting_clipboard = True
                                 last_received_hash = content_hash
                                 last_clipboard_hash = content_hash
                                 last_received_file = saved_path
@@ -607,7 +617,8 @@ def sync_from_server(tray_app):
                         content_hash = data.get("content_hash")  # 直接使用服务器传来的哈希
                         
                         if new_text != last_clipboard_text:
-                            # 在设置剪贴板之前更新哈希
+                            # 在设置剪贴板之前更新状态
+                            is_setting_clipboard = True
                             last_received_hash = content_hash
                             last_clipboard_hash = content_hash
                             last_received_time = time.time()
@@ -615,6 +626,7 @@ def sync_from_server(tray_app):
                             pyperclip.copy(new_text)
                             last_clipboard_text = new_text
                             last_clipboard_files = []
+                            is_setting_clipboard = False  # 文本设置是同步的，立即清除标志
                             print(f"↓ 从服务端同步文本: {new_text[:30]!r}")
                             if ENABLE_POPUP:
                                 tray_app.safe_notify(
@@ -713,12 +725,14 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     
     def _set_file_to_clipboard(self, file_path):
         """在主线程中设置文件到剪贴板（槽函数）"""
+        global is_setting_clipboard
         try:
             clipboard = QtWidgets.QApplication.clipboard()
             mime_data = QtCore.QMimeData()
             
             if not os.path.exists(file_path):
                 print(f"❌ 文件不存在: {file_path}")
+                is_setting_clipboard = False
                 return
             
             # 使用绝对路径
@@ -736,6 +750,9 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             print(f"❌ 设置文件到剪贴板失败: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # 清除标志，允许clipboard_watcher继续检测
+            is_setting_clipboard = False
     
     def safe_set_file(self, file_path):
         """线程安全的文件设置方法"""
@@ -743,6 +760,7 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     
     def _set_image_to_clipboard(self, image):
         """在主线程中设置图片到剪贴板（槽函数）"""
+        global is_setting_clipboard
         try:
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setImage(image)
@@ -754,6 +772,9 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             print(f"❌ 设置图片到剪贴板失败: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # 清除标志，允许clipboard_watcher继续检测（但仍有3秒保护期）
+            is_setting_clipboard = False
     
     def safe_set_image(self, image):
         """线程安全的图片设置方法"""
