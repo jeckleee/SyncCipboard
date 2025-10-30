@@ -541,9 +541,8 @@ def sync_from_server(tray_app):
                                 watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
 
-                                last_clipboard_hash = get_image_hash(image)
-                                last_clipboard_files = []
-                                last_clipboard_text = ""
+                                # 注意：哈希会在 _set_image_to_clipboard 中设置
+                                # 因为需要从实际剪贴板读取后计算，确保一致性
 
                                 tray_app.safe_set_image(image)
                                 
@@ -574,9 +573,7 @@ def sync_from_server(tray_app):
                                 watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
 
-                                last_clipboard_files = [saved_path]
-                                last_clipboard_hash = None
-                                last_clipboard_text = ""
+                                # 注意：状态会在 _set_file_to_clipboard 中更新
 
                                 tray_app.safe_set_file(saved_path)
                                 print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
@@ -699,7 +696,7 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     
     def _set_file_to_clipboard(self, file_path):
         """在主线程中设置文件到剪贴板（槽函数）"""
-        global is_setting_clipboard
+        global is_setting_clipboard, last_clipboard_files, last_clipboard_hash, last_clipboard_text
         try:
             clipboard = QtWidgets.QApplication.clipboard()
             mime_data = QtCore.QMimeData()
@@ -716,6 +713,11 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             mime_data.setUrls([url])
             
             clipboard.setMimeData(mime_data)
+            
+            # 设置完成后更新状态
+            last_clipboard_files = [file_path]
+            last_clipboard_hash = None
+            last_clipboard_text = ""
             
             print(f"✅ 文件已设置到剪贴板: {file_path}")
             print(f"💡 现在可以按 Ctrl+V 粘贴文件")
@@ -734,10 +736,18 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     
     def _set_image_to_clipboard(self, image):
         """在主线程中设置图片到剪贴板（槽函数）"""
-        global is_setting_clipboard
+        global is_setting_clipboard, last_clipboard_hash, last_clipboard_files, last_clipboard_text
         try:
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setImage(image)
+            
+            # 设置完成后，从剪贴板重新读取图片并计算哈希
+            # 这样可以确保哈希与实际剪贴板内容一致
+            actual_image = clipboard.image()
+            if not actual_image.isNull():
+                last_clipboard_hash = get_image_hash(actual_image)
+                last_clipboard_files = []
+                last_clipboard_text = ""
             
             print(f"✅ 图片已设置到剪贴板: {image.width()}x{image.height()}")
             print(f"💡 现在可以按 Ctrl+V 粘贴图片")
