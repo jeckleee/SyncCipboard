@@ -10,8 +10,8 @@ import pyperclip
 import configparser
 import base64
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from io import BytesIO
 from io import BytesIO
 from PyQt5 import QtWidgets, QtGui, QtCore
 
@@ -76,6 +76,13 @@ last_sync_download_time = 0  # 最后一次实际下载内容的本地时间戳�
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
 SYNC_PROTECTION_SECONDS = 3  # 同步保护时间（秒）
+
+# =======================
+# 辅助函数
+# =======================
+def get_timestamp():
+    """获取当前时间戳字符串（精确到毫秒）"""
+    return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 # =======================
 # 文件处理辅助函数
@@ -245,14 +252,13 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             # 上传图片
             image_data = image_to_base64(image)
             if image_data is None:
-                print(f"❌ 图片编码失败")
                 return
             
             image_size = len(image_data)
             width = image.width()
             height = image.height()
             
-            requests.post(f"{SERVER_URL}/upload", json={
+            response = requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "image",
                 "image_data": image_data,
@@ -261,15 +267,17 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
                 "image_size": image_size
             }, timeout=15)
             
-            if ENABLE_POPUP:
-                tray_app.safe_notify(
-                    "📤 图片同步",
-                    f"已上传: {width}x{height} ({image_size/1024:.1f}KB)",
-                    QtWidgets.QSystemTrayIcon.Information,
-                    2000
-                )
-            play_sound()
-            print(f"↑ 已上传图片: {width}x{height} ({image_size/1024:.1f}KB)")
+            if response.status_code == 200:
+                print(f"✅ 上传图片成功: {width}x{height} ({image_size/1024:.1f}KB) | {get_timestamp()}")
+                
+                if ENABLE_POPUP:
+                    tray_app.safe_notify(
+                        "📤 图片同步",
+                        f"已上传: {width}x{height} ({image_size/1024:.1f}KB)",
+                        QtWidgets.QSystemTrayIcon.Information,
+                        2000
+                    )
+                play_sound()
             
         elif content_type == "file" and file_path:
             # 上传文件
@@ -278,10 +286,9 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             file_data = file_to_base64(file_path)
             
             if file_data is None:
-                print(f"❌ 文件编码失败: {file_path}")
                 return
             
-            requests.post(f"{SERVER_URL}/upload", json={
+            response = requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "file",
                 "file_name": file_name,
@@ -289,34 +296,40 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
                 "file_size": file_size
             }, timeout=10)
             
-            if ENABLE_POPUP:
-                tray_app.safe_notify(
-                    "📤 文件同步",
-                    f"已上传: {file_name} ({file_size/1024:.1f}KB)",
-                    QtWidgets.QSystemTrayIcon.Information,
-                    2000
-                )
-            play_sound()
-            print(f"↑ 已上传文件: {file_name} ({file_size/1024:.1f}KB)")
+            if response.status_code == 200:
+                print(f"✅ 上传文件成功: {file_name} ({file_size/1024:.1f}KB) | {get_timestamp()}")
+                
+                if ENABLE_POPUP:
+                    tray_app.safe_notify(
+                        "📤 文件同步",
+                        f"已上传: {file_name} ({file_size/1024:.1f}KB)",
+                        QtWidgets.QSystemTrayIcon.Information,
+                        2000
+                    )
+                play_sound()
         else:
             # 上传文本
-            requests.post(f"{SERVER_URL}/upload", json={
+            text_preview = text[:30] if len(text) <= 30 else text[:30] + "..."
+            
+            response = requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "text",
                 "content": text
             }, timeout=3)
             
-            if ENABLE_POPUP:
-                tray_app.safe_notify(
-                    "📤 剪贴板同步",
-                    "上传成功",
-                    QtWidgets.QSystemTrayIcon.Information,
-                    2000
-                )
-            play_sound()
-            print(f"↑ 已上传文本: {text[:30]!r}")
+            if response.status_code == 200:
+                print(f"✅ 上传文本成功: {text_preview!r} | {get_timestamp()}")
+                
+                if ENABLE_POPUP:
+                    tray_app.safe_notify(
+                        "📤 剪贴板同步",
+                        "上传成功",
+                        QtWidgets.QSystemTrayIcon.Information,
+                        2000
+                    )
+                play_sound()
     except Exception as e:
-        print("❌ 上传失败:", e)
+        pass
 
 def fetch_clipboard():
     """从服务端拉取最新内容"""
@@ -342,14 +355,6 @@ def clipboard_watcher(tray_app):
             if is_setting_clipboard:
                 time.sleep(0.3)
                 continue
-            
-            # 优先级2：检查是否在同步保护期内（从服务器下载后的3秒内）
-            if last_sync_download_time > 0:
-                elapsed = time.time() - last_sync_download_time
-                if elapsed < SYNC_PROTECTION_SECONDS:
-                    # 在保护期内，跳过上传
-                    time.sleep(0.5)
-                    continue
 
             # 开始检测剪贴板内容
             # 优先级1：文件
@@ -359,12 +364,18 @@ def clipboard_watcher(tray_app):
                 last_text = ""
                 last_image_data = None
                 
+                # 检查是否需要上传（距离上次下载是否超过3秒）
+                if last_sync_download_time > 0:
+                    elapsed = time.time() - last_sync_download_time
+                    if elapsed < SYNC_PROTECTION_SECONDS:
+                        print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
+                        time.sleep(0.5)
+                        continue
+                
                 file_path = current_files[0]
                 has_directory = any(os.path.isdir(path) for path in current_files)
 
                 if has_directory:
-                    dir_path = next(path for path in current_files if os.path.isdir(path))
-                    print(f"⛔️  暂不支持同步文件夹: {dir_path}")
                     if ENABLE_POPUP:
                         tray_app.safe_notify(
                             "⛔️ 不支持的剪贴板类型",
@@ -375,9 +386,7 @@ def clipboard_watcher(tray_app):
                     time.sleep(0.5)
                     continue
 
-                if MAX_FILE_SIZE is None:
-                    print(f"⏭️  检测到文件，但文件同步已禁用")
-                else:
+                if MAX_FILE_SIZE is not None:
                     file_size = os.path.getsize(file_path)
                     file_name = os.path.basename(file_path)
 
@@ -386,7 +395,6 @@ def clipboard_watcher(tray_app):
                     else:
                         max_mb = MAX_FILE_SIZE / (1024 * 1024)
                         file_mb = file_size / (1024 * 1024)
-                        print(f"⚠️  文件过大: {file_name} ({file_mb:.1f}MB > {max_mb:.1f}MB)")
                         if ENABLE_POPUP:
                             tray_app.safe_notify(
                                 "⚠️  文件过大",
@@ -406,15 +414,20 @@ def clipboard_watcher(tray_app):
                         last_text = ""
                         last_files = []
                         
+                        # 检查是否需要上传（距离上次下载是否超过3秒）
+                        if last_sync_download_time > 0:
+                            elapsed = time.time() - last_sync_download_time
+                            if elapsed < SYNC_PROTECTION_SECONDS:
+                                print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
+                                time.sleep(0.5)
+                                continue
+                        
                         image_size = len(image_data)
-                        if MAX_FILE_SIZE is None:
-                            print(f"⏭️  检测到图片，但文件同步已禁用")
-                        elif MAX_FILE_SIZE == 0 or image_size <= MAX_FILE_SIZE:
+                        if MAX_FILE_SIZE and (MAX_FILE_SIZE == 0 or image_size <= MAX_FILE_SIZE):
                             upload_clipboard(tray_app, content_type="image", image=current_image)
-                        else:
+                        elif MAX_FILE_SIZE:
                             max_mb = MAX_FILE_SIZE / (1024 * 1024)
                             image_mb = image_size / (1024 * 1024)
-                            print(f"⚠️  图片过大: {current_image.width()}x{current_image.height()} ({image_mb:.1f}MB > {max_mb:.1f}MB)")
                             if ENABLE_POPUP:
                                 tray_app.safe_notify(
                                     "⚠️  图片过大",
@@ -430,6 +443,15 @@ def clipboard_watcher(tray_app):
                         last_text = current_text
                         last_files = []
                         last_image_data = None
+                        
+                        # 检查是否需要上传（距离上次下载是否超过3秒）
+                        if last_sync_download_time > 0:
+                            elapsed = time.time() - last_sync_download_time
+                            if elapsed < SYNC_PROTECTION_SECONDS:
+                                print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
+                                time.sleep(0.5)
+                                continue
+                        
                         upload_clipboard(tray_app, content_type="text", text=current_text)
         
         except Exception as e:
@@ -460,13 +482,13 @@ def sync_from_server(tray_app):
                         if image_data:
                             image = base64_to_image(image_data)
                             if image:
+                                # 记录下载时间（写入剪贴板之前），用于保护期判断
+                                last_sync_download_time = time.time()
+                                
                                 is_setting_clipboard = True
                                 tray_app.safe_set_image(image)
                                 
-                                # 记录下载时间，用于保护期判断
-                                last_sync_download_time = time.time()
-                                
-                                print(f"↓ 从服务端同步图片: {image_width}x{image_height} ({image_size/1024:.1f}KB)")
+                                print(f"✅ 下载图片成功: {image_width}x{image_height} ({image_size/1024:.1f}KB) | {get_timestamp()}")
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 图片同步",
@@ -485,12 +507,13 @@ def sync_from_server(tray_app):
                         if file_name and file_data:
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
+                                # 记录下载时间（写入剪贴板之前），用于保护期判断
+                                last_sync_download_time = time.time()
+                                
                                 is_setting_clipboard = True
                                 tray_app.safe_set_file(saved_path)
                                 
-                                # 记录下载时间，用于保护期判断
-                                last_sync_download_time = time.time()
-                                print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
+                                print(f"✅ 下载文件成功: {file_name} ({file_size/1024:.1f}KB) | {get_timestamp()}")
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 文件同步",
@@ -503,14 +526,16 @@ def sync_from_server(tray_app):
                     else:
                         # 处理文本同步
                         new_text = data.get("content", "")
+                        text_preview = new_text[:30] if len(new_text) <= 30 else new_text[:30] + "..."
+                        
+                        # 记录下载时间（写入剪贴板之前），用于保护期判断
+                        last_sync_download_time = time.time()
+                        
                         is_setting_clipboard = True
                         pyperclip.copy(new_text)
-                        
-                        # 记录下载时间，用于保护期判断
-                        last_sync_download_time = time.time()
                         is_setting_clipboard = False  # 文本设置是同步的，立即清除标志
                         
-                        print(f"↓ 从服务端同步文本: {new_text[:30]!r}")
+                        print(f"✅ 下载文本成功: {text_preview!r} | {get_timestamp()}")
                         if ENABLE_POPUP:
                             tray_app.safe_notify(
                                 "📥 剪贴板同步",
@@ -591,7 +616,6 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             QtWidgets.QSystemTrayIcon.Information,
             2500
         )
-        print(f"✅ 启动通知已显示")
     
     def _show_notification(self, title, message, icon, duration):
         """在主线程中显示通知（槽函数）"""
@@ -599,7 +623,6 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         if not self.isVisible():
             self.show()
         
-        print(f"📢 [通知] {title}: {message}")
         self.showMessage(title, message, icon, duration)
     
     def safe_notify(self, title, message, icon=QtWidgets.QSystemTrayIcon.Information, duration=2000):
@@ -614,7 +637,6 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             mime_data = QtCore.QMimeData()
             
             if not os.path.exists(file_path):
-                print(f"❌ 文件不存在: {file_path}")
                 return
             
             # 使用绝对路径
@@ -623,13 +645,8 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             mime_data.setUrls([url])
             clipboard.setMimeData(mime_data)
             
-            print(f"✅ 文件已设置到剪贴板: {file_path}")
-            print(f"💡 现在可以按 Ctrl+V 粘贴文件")
-            
         except Exception as e:
-            print(f"❌ 设置文件到剪贴板失败: {e}")
-            import traceback
-            traceback.print_exc()
+            pass
         finally:
             # 清除标志，允许clipboard_watcher继续检测
             is_setting_clipboard = False
@@ -645,13 +662,8 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setImage(image)
             
-            print(f"✅ 图片已设置到剪贴板: {image.width()}x{image.height()}")
-            print(f"💡 现在可以按 Ctrl+V 粘贴图片")
-            
         except Exception as e:
-            print(f"❌ 设置图片到剪贴板失败: {e}")
-            import traceback
-            traceback.print_exc()
+            pass
         finally:
             # 清除标志，允许clipboard_watcher继续检测（但仍有3秒保护期）
             is_setting_clipboard = False
@@ -745,3 +757,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
