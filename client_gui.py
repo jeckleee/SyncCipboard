@@ -77,7 +77,8 @@ last_clipboard_hash = None  # 记录上次剪贴板内容的哈希值（统一�
 last_sync_time = None
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
-watcher_pause_until = 0  # 暂停剪贴板监听的截止时间戳
+last_sync_download_time = 0  # 最后一次从服务器下载内容的时间戳
+SYNC_PROTECTION_SECONDS = 3  # 同步保护时间（秒）
 
 # =======================
 # 文件处理辅助函数
@@ -406,7 +407,7 @@ def fetch_clipboard():
 def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
     global last_clipboard_text, last_clipboard_files, last_clipboard_hash
-    global is_setting_clipboard, watcher_pause_until
+    global is_setting_clipboard, last_sync_download_time
 
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
 
@@ -415,19 +416,16 @@ def clipboard_watcher(tray_app):
             if is_setting_clipboard:
                 time.sleep(0.3)
                 continue
-
-            if watcher_pause_until:
-                now = time.time()
-                if now < watcher_pause_until:
+            
+            # 检查是否在同步保护期内（从服务器下载后的3秒内）
+            if last_sync_download_time > 0:
+                elapsed = time.time() - last_sync_download_time
+                if elapsed < SYNC_PROTECTION_SECONDS:
+                    # 在保护期内，跳过上传
                     if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                        remaining = watcher_pause_until - now
-                        print(f"🛑  剪贴板监听暂停中，还剩 {remaining:.1f}s")
-                    time.sleep(0.3)
+                        print(f"🛡️  同步保护期 ({elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s)，跳过上传检查")
+                    time.sleep(0.5)
                     continue
-                else:
-                    watcher_pause_until = 0
-                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                        print("▶️  剪贴板监听已恢复")
 
             current_files = get_clipboard_files()
 
@@ -517,7 +515,7 @@ def clipboard_watcher(tray_app):
 def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
     global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_hash
-    global is_setting_clipboard, watcher_pause_until
+    global is_setting_clipboard, last_sync_download_time
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
@@ -538,15 +536,13 @@ def sync_from_server(tray_app):
                             # 解码图片
                             image = base64_to_image(image_data)
                             if image:
-                                # 先暂停监听，并等待一小段时间确保暂停生效
-                                watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
-                                time.sleep(0.1)  # 等待 clipboard_watcher 进入暂停状态
-
-                                # 注意：哈希会在 _set_image_to_clipboard 中设置
-                                # 因为需要从实际剪贴板读取后计算，确保一致性
-
+                                
+                                # 设置图片到剪贴板（哈希会在槽函数中更新）
                                 tray_app.safe_set_image(image)
+                                
+                                # 记录下载时间，用于保护期判断
+                                last_sync_download_time = time.time()
                                 
                                 # 调试信息
                                 if os.environ.get("SYNCCLIP_DEBUG") == "1":
@@ -572,14 +568,13 @@ def sync_from_server(tray_app):
                             # 保存文件到临时目录
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
-                                # 先暂停监听，并等待一小段时间确保暂停生效
-                                watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
-                                time.sleep(0.1)  # 等待 clipboard_watcher 进入暂停状态
-
-                                # 注意：状态会在 _set_file_to_clipboard 中更新
-
+                                
+                                # 设置文件到剪贴板（状态会在槽函数中更新）
                                 tray_app.safe_set_file(saved_path)
+                                
+                                # 记录下载时间，用于保护期判断
+                                last_sync_download_time = time.time()
                                 print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
@@ -594,13 +589,15 @@ def sync_from_server(tray_app):
                         new_text = data.get("content", "")
                         
                         if new_text != last_clipboard_text:
-                            watcher_pause_until = time.time() + 3
                             is_setting_clipboard = True
 
                             pyperclip.copy(new_text)
                             last_clipboard_text = new_text
                             last_clipboard_files = []
                             last_clipboard_hash = calculate_content_hash(new_text)
+                            
+                            # 记录下载时间，用于保护期判断
+                            last_sync_download_time = time.time()
                             is_setting_clipboard = False  # 文本设置是同步的，立即清除标志
                             print(f"↓ 从服务端同步文本: {new_text[:30]!r}")
                             if ENABLE_POPUP:
@@ -815,7 +812,7 @@ def main():
     
     # 启动前清空剪贴板，避免脏数据触发同步
     global last_clipboard_text, last_clipboard_files, last_clipboard_hash
-    global is_setting_clipboard, watcher_pause_until
+    global is_setting_clipboard, last_sync_download_time
 
     clipboard = QtWidgets.QApplication.clipboard()
     clipboard.clear()
@@ -825,7 +822,7 @@ def main():
     last_clipboard_files = []
     last_clipboard_hash = None
     is_setting_clipboard = False
-    watcher_pause_until = 0
+    last_sync_download_time = 0
 
     print("🧹 启动时已清空剪贴板")
 
