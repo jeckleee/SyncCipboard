@@ -454,11 +454,14 @@ def clipboard_watcher(tray_app):
                 has_directory = any(os.path.isdir(path) for path in current_files)
 
                 if skip_next_clipboard_change and not has_directory:
-                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                        print(f"⏭️  跳过同步后的文件变化: {file_path}")
-                    last_clipboard_files = current_files
-                    skip_next_clipboard_change = False
-                    continue
+                    if last_received_file and is_same_file(file_path, last_received_file):
+                        if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                            print(f"⏭️  跳过同步后的文件变化: {file_path}")
+                        last_clipboard_files = current_files
+                        skip_next_clipboard_change = False
+                        continue
+                    else:
+                        skip_next_clipboard_change = False
 
                 # 对于文件夹，跳过一次标记不生效（需要继续处理）
                 if skip_next_clipboard_change and has_directory:
@@ -519,12 +522,15 @@ def clipboard_watcher(tray_app):
                     
                     if image_hash and image_hash != last_clipboard_hash:
                         if skip_next_clipboard_change:
-                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                                print(f"⏭️  跳过同步后的图片变化: {current_image.width()}x{current_image.height()}")
-                            last_clipboard_hash = image_hash
-                            last_clipboard_files = []
-                            skip_next_clipboard_change = False
-                            continue
+                            if last_received_hash and image_hash == last_received_hash:
+                                if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                    print(f"⏭️  跳过同步后的图片变化: {current_image.width()}x{current_image.height()}")
+                                last_clipboard_hash = image_hash
+                                last_clipboard_files = []
+                                skip_next_clipboard_change = False
+                                continue
+                            else:
+                                skip_next_clipboard_change = False
 
                         # 图片发生变化
                         last_clipboard_hash = image_hash
@@ -558,13 +564,17 @@ def clipboard_watcher(tray_app):
                     current_text = pyperclip.paste()
                     if current_text != last_clipboard_text:
                         if skip_next_clipboard_change:
-                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                                print("⏭️  跳过同步后的文本变化")
-                            last_clipboard_text = current_text
-                            last_clipboard_files = []
-                            last_clipboard_hash = calculate_content_hash(current_text)
-                            skip_next_clipboard_change = False
-                            continue
+                            current_hash = calculate_content_hash(current_text)
+                            if last_received_hash and current_hash == last_received_hash:
+                                if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                    print("⏭️  跳过同步后的文本变化")
+                                last_clipboard_text = current_text
+                                last_clipboard_files = []
+                                last_clipboard_hash = current_hash
+                                skip_next_clipboard_change = False
+                                continue
+                            else:
+                                skip_next_clipboard_change = False
 
                         last_clipboard_text = current_text
                         last_clipboard_files = []
