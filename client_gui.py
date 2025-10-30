@@ -80,6 +80,7 @@ last_received_time = 0  # 记录接收时间
 last_sync_time = None
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
+skip_next_clipboard_change = False  # 标志：跳过接下来的一次剪贴板变化（同步后的首次变化）
 
 # 接收文件后的保护时间（秒）- 在此期间相同文件不会被上传
 RECEIVED_FILE_PROTECTION_TIME = 3
@@ -412,7 +413,7 @@ def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
     global last_clipboard_text, last_clipboard_files, last_clipboard_hash
     global last_received_file, last_received_hash, last_received_time
-    global is_setting_clipboard
+    global is_setting_clipboard, skip_next_clipboard_change
     
     # macOS调试模式
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
@@ -450,6 +451,14 @@ def clipboard_watcher(tray_app):
             if current_files and current_files != last_clipboard_files:
                 # 剪贴板有文件且发生变化
                 file_path = current_files[0]
+
+                if skip_next_clipboard_change:
+                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                        print(f"⏭️  跳过同步后的文件变化: {file_path}")
+                    last_clipboard_files = current_files
+                    skip_next_clipboard_change = False
+                    continue
+
                 last_clipboard_files = current_files
                 
                 # 检查是否启用文件同步
@@ -490,6 +499,14 @@ def clipboard_watcher(tray_app):
                         print(f"🔍 [图片调试] 当前哈希: {image_hash[:8] if image_hash else 'None'}... 上次哈希: {last_clipboard_hash[:8] if last_clipboard_hash else 'None'}...")
                     
                     if image_hash and image_hash != last_clipboard_hash:
+                        if skip_next_clipboard_change:
+                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                print(f"⏭️  跳过同步后的图片变化: {current_image.width()}x{current_image.height()}")
+                            last_clipboard_hash = image_hash
+                            last_clipboard_files = []
+                            skip_next_clipboard_change = False
+                            continue
+
                         # 图片发生变化
                         last_clipboard_hash = image_hash
                         last_clipboard_files = []
@@ -521,6 +538,15 @@ def clipboard_watcher(tray_app):
                     # 没有图片，检查文本
                     current_text = pyperclip.paste()
                     if current_text != last_clipboard_text:
+                        if skip_next_clipboard_change:
+                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                print("⏭️  跳过同步后的文本变化")
+                            last_clipboard_text = current_text
+                            last_clipboard_files = []
+                            last_clipboard_hash = calculate_content_hash(current_text)
+                            skip_next_clipboard_change = False
+                            continue
+
                         last_clipboard_text = current_text
                         last_clipboard_files = []
                         last_clipboard_hash = None
@@ -533,6 +559,7 @@ def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
     global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_hash
     global last_received_file, last_received_hash, last_received_time, is_setting_clipboard
+    global skip_next_clipboard_change
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
@@ -557,6 +584,7 @@ def sync_from_server(tray_app):
                                 # 必须在设置到剪贴板之前就更新所有状态
                                 # 设置标志：正在设置剪贴板（让clipboard_watcher跳过检测）
                                 is_setting_clipboard = True
+                                skip_next_clipboard_change = True
                                 last_received_hash = content_hash
                                 last_clipboard_hash = content_hash
                                 last_received_time = time.time()
@@ -592,6 +620,7 @@ def sync_from_server(tray_app):
                             if saved_path:
                                 # 必须在设置到剪贴板之前就更新状态
                                 is_setting_clipboard = True
+                                skip_next_clipboard_change = True
                                 last_received_hash = content_hash
                                 last_clipboard_hash = content_hash
                                 last_received_file = saved_path
@@ -617,6 +646,7 @@ def sync_from_server(tray_app):
                         if new_text != last_clipboard_text:
                             # 在设置剪贴板之前更新状态
                             is_setting_clipboard = True
+                            skip_next_clipboard_change = True
                             last_received_hash = content_hash
                             last_clipboard_hash = content_hash
                             last_received_time = time.time()
