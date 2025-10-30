@@ -428,7 +428,45 @@ def clipboard_watcher(tray_app):
             # 检查是否在保护期内（接收内容后的3秒内不检测剪贴板变化）
             if last_received_time > 0:
                 elapsed = time.time() - last_received_time
-                if elapsed <= RECEIVED_FILE_PROTECTION_TIME:
+                new_content_detected = False
+
+                try:
+                    qt_clipboard = QtWidgets.QApplication.clipboard()
+                    mime_data = qt_clipboard.mimeData()
+                except Exception:
+                    mime_data = None
+                    qt_clipboard = None
+
+                if mime_data:
+                    if mime_data.hasUrls():
+                        urls = [url.toLocalFile() for url in mime_data.urls() if url.isLocalFile()]
+                        urls = [os.path.abspath(u) for u in urls if u]
+                        if last_received_file:
+                            if not urls or not any(is_same_file(u, last_received_file) for u in urls):
+                                new_content_detected = True
+                        elif urls:
+                            new_content_detected = True
+                    elif mime_data.hasImage():
+                        image = qt_clipboard.image() if qt_clipboard else None
+                        if image and not image.isNull():
+                            image_hash = get_image_hash(image)
+                            if not last_received_hash or (image_hash and image_hash != last_received_hash):
+                                new_content_detected = True
+                    else:
+                        current_text = pyperclip.paste()
+                        if current_text and current_text != last_clipboard_text:
+                            current_hash = calculate_content_hash(current_text)
+                            if not last_received_hash or current_hash != last_received_hash:
+                                new_content_detected = True
+
+                if new_content_detected:
+                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                        print("🛡️  检测到新的剪贴板内容，提前结束保护期")
+                    last_received_hash = None
+                    last_received_file = None
+                    last_received_time = 0
+                    skip_next_clipboard_change = False
+                elif elapsed <= RECEIVED_FILE_PROTECTION_TIME:
                     # 保护期内，跳过剪贴板检测
                     if os.environ.get("SYNCCLIP_DEBUG") == "1":
                         print(f"🛡️  保护期中 ({elapsed:.1f}s / {RECEIVED_FILE_PROTECTION_TIME}s)")
@@ -436,11 +474,10 @@ def clipboard_watcher(tray_app):
                     continue
                 else:
                     # 保护期已过，清除记录
-                    if last_received_hash:
+                    if last_received_time > 0:
                         print(f"🕐 接收内容保护期已过，恢复剪贴板检测")
-                        last_received_hash = None
-                        last_received_file = None
-                        last_received_time = 0
+                    last_received_time = 0
+                    skip_next_clipboard_change = False
             
             # 优先检查文件
             current_files = get_clipboard_files()
@@ -454,14 +491,11 @@ def clipboard_watcher(tray_app):
                 has_directory = any(os.path.isdir(path) for path in current_files)
 
                 if skip_next_clipboard_change and not has_directory:
-                    if last_received_file and is_same_file(file_path, last_received_file):
-                        if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                            print(f"⏭️  跳过同步后的文件变化: {file_path}")
-                        last_clipboard_files = current_files
-                        skip_next_clipboard_change = False
-                        continue
-                    else:
-                        skip_next_clipboard_change = False
+                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                        print(f"⏭️  跳过同步后的文件变化: {file_path}")
+                    last_clipboard_files = current_files
+                    skip_next_clipboard_change = False
+                    continue
 
                 # 对于文件夹，跳过一次标记不生效（需要继续处理）
                 if skip_next_clipboard_change and has_directory:
@@ -522,15 +556,12 @@ def clipboard_watcher(tray_app):
                     
                     if image_hash and image_hash != last_clipboard_hash:
                         if skip_next_clipboard_change:
-                            if last_received_hash and image_hash == last_received_hash:
-                                if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                                    print(f"⏭️  跳过同步后的图片变化: {current_image.width()}x{current_image.height()}")
-                                last_clipboard_hash = image_hash
-                                last_clipboard_files = []
-                                skip_next_clipboard_change = False
-                                continue
-                            else:
-                                skip_next_clipboard_change = False
+                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                print(f"⏭️  跳过同步后的图片变化: {current_image.width()}x{current_image.height()}")
+                            last_clipboard_hash = image_hash
+                            last_clipboard_files = []
+                            skip_next_clipboard_change = False
+                            continue
 
                         # 图片发生变化
                         last_clipboard_hash = image_hash
@@ -564,17 +595,13 @@ def clipboard_watcher(tray_app):
                     current_text = pyperclip.paste()
                     if current_text != last_clipboard_text:
                         if skip_next_clipboard_change:
-                            current_hash = calculate_content_hash(current_text)
-                            if last_received_hash and current_hash == last_received_hash:
-                                if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                                    print("⏭️  跳过同步后的文本变化")
-                                last_clipboard_text = current_text
-                                last_clipboard_files = []
-                                last_clipboard_hash = current_hash
-                                skip_next_clipboard_change = False
-                                continue
-                            else:
-                                skip_next_clipboard_change = False
+                            if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                                print("⏭️  跳过同步后的文本变化")
+                            last_clipboard_text = current_text
+                            last_clipboard_files = []
+                            last_clipboard_hash = calculate_content_hash(current_text)
+                            skip_next_clipboard_change = False
+                            continue
 
                         last_clipboard_text = current_text
                         last_clipboard_files = []
