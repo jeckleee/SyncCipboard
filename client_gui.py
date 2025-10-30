@@ -538,8 +538,10 @@ def sync_from_server(tray_app):
                             # 解码图片
                             image = base64_to_image(image_data)
                             if image:
+                                # 先暂停监听，并等待一小段时间确保暂停生效
                                 watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
+                                time.sleep(0.1)  # 等待 clipboard_watcher 进入暂停状态
 
                                 # 注意：哈希会在 _set_image_to_clipboard 中设置
                                 # 因为需要从实际剪贴板读取后计算，确保一致性
@@ -570,8 +572,10 @@ def sync_from_server(tray_app):
                             # 保存文件到临时目录
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
+                                # 先暂停监听，并等待一小段时间确保暂停生效
                                 watcher_pause_until = time.time() + 3
                                 is_setting_clipboard = True
+                                time.sleep(0.1)  # 等待 clipboard_watcher 进入暂停状态
 
                                 # 注意：状态会在 _set_file_to_clipboard 中更新
 
