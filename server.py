@@ -15,6 +15,7 @@ app = FastAPI()
 clipboard_store = {
     "content": "",
     "content_type": "text",  # text, file 或 image
+    "content_hash": None,    # 内容哈希（用于防止重复上传）
     "file_name": None,       # 文件名（当content_type=file时）
     "file_data": None,       # 文件数据（Base64编码）
     "file_size": 0,          # 文件大小（字节）
@@ -33,6 +34,7 @@ async def upload_clipboard(request: Request):
     
     clipboard_store["content_type"] = content_type
     clipboard_store["device_id"] = data.get("device_id")
+    clipboard_store["content_hash"] = data.get("content_hash")  # 接收客户端计算的哈希
     clipboard_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     
     if content_type == "image":

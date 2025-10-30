@@ -73,11 +73,9 @@ else:
 DEVICE_ID = f"{platform.node()}-{uuid.uuid4().hex[:6]}"
 last_clipboard_text = ""
 last_clipboard_files = []  # 记录上次的文件列表
-last_clipboard_image_hash = None  # 记录上次图片的哈希值
-last_clipboard_image_size = None  # 记录上次图片的尺寸
-last_received_file = None  # 记录最后接收的文件路径，避免重复上传
-last_received_image_hash = None  # 记录最后接收的图片哈希，避免重复上传
-last_received_image_size = None  # 记录最后接收的图片尺寸
+last_clipboard_hash = None  # 记录上次剪贴板内容的哈希值（统一用于文本/文件/图片）
+last_received_hash = None  # 记录最后接收内容的哈希，避免重复上传
+last_received_file = None  # 记录最后接收的文件路径（用于文件比较）
 last_received_time = 0  # 记录接收时间
 last_sync_time = None
 stop_flag = False
@@ -271,17 +269,21 @@ def get_image_hash(image):
         print(f"⚠️  图片哈希计算失败: {e}")
         return None
 
-def is_same_image(hash1, size1, hash2, size2):
-    """判断两个图片是否相同（通过哈希和尺寸）"""
-    if not hash1 or not hash2:
-        return False
-    
-    # 首先比较尺寸
-    if size1 and size2 and size1 != size2:
-        return False
-    
-    # 再比较哈希
-    return hash1 == hash2
+def calculate_content_hash(content):
+    """计算内容哈希（文本/文件数据/图片数据的统一哈希）"""
+    try:
+        import hashlib
+        if isinstance(content, str):
+            # 文本内容
+            return hashlib.md5(content.encode('utf-8')).hexdigest()
+        elif isinstance(content, bytes):
+            # 二进制数据（文件/图片）
+            return hashlib.md5(content).hexdigest()
+        else:
+            return None
+    except Exception as e:
+        print(f"⚠️  哈希计算失败: {e}")
+        return None
 
 # =======================
 # 系统提示音
@@ -315,6 +317,9 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
                 print(f"❌ 图片编码失败")
                 return
             
+            # 计算哈希
+            content_hash = get_image_hash(image)
+            
             image_size = len(image_data)
             width = image.width()
             height = image.height()
@@ -322,6 +327,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "image",
+                "content_hash": content_hash,
                 "image_data": image_data,
                 "image_width": width,
                 "image_height": height,
@@ -348,9 +354,13 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
                 print(f"❌ 文件编码失败: {file_path}")
                 return
             
+            # 计算文件哈希（基于文件名+大小+部分内容）
+            content_hash = calculate_content_hash(f"{file_name}:{file_size}:{file_data[:100]}")
+            
             requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "file",
+                "content_hash": content_hash,
                 "file_name": file_name,
                 "file_data": file_data,
                 "file_size": file_size
@@ -367,9 +377,12 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             print(f"↑ 已上传文件: {file_name} ({file_size/1024:.1f}KB)")
         else:
             # 上传文本
+            content_hash = calculate_content_hash(text)
+            
             requests.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "text",
+                "content_hash": content_hash,
                 "content": text
             }, timeout=3)
             
@@ -396,8 +409,8 @@ def fetch_clipboard():
 
 def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
-    global last_clipboard_text, last_clipboard_files, last_clipboard_image_hash, last_clipboard_image_size
-    global last_received_file, last_received_image_hash, last_received_image_size, last_received_time
+    global last_clipboard_text, last_clipboard_files, last_clipboard_hash
+    global last_received_file, last_received_hash, last_received_time
     
     # macOS调试模式
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
@@ -405,14 +418,10 @@ def clipboard_watcher(tray_app):
     while not stop_flag:
         try:
             # 检查保护时间是否过期
-            if (last_received_file or last_received_image_hash) and (time.time() - last_received_time > RECEIVED_FILE_PROTECTION_TIME):
-                if last_received_file:
-                    print(f"🕐 接收文件保护期已过，清除记录")
-                    last_received_file = None
-                if last_received_image_hash:
-                    print(f"🕐 接收图片保护期已过，清除记录")
-                    last_received_image_hash = None
-                    last_received_image_size = None
+            if last_received_hash and (time.time() - last_received_time > RECEIVED_FILE_PROTECTION_TIME):
+                print(f"🕐 接收内容保护期已过，清除记录")
+                last_received_hash = None
+                last_received_file = None
             
             # 优先检查文件
             current_files = get_clipboard_files()
@@ -465,25 +474,22 @@ def clipboard_watcher(tray_app):
                 if current_image:
                     # 有图片数据
                     image_hash = get_image_hash(current_image)
-                    image_dimensions = (current_image.width(), current_image.height())
                     
                     # 调试信息
                     if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                        print(f"🔍 [图片调试] 当前: {image_dimensions} 哈希{image_hash[:8] if image_hash else 'None'}... 接收: {last_received_image_size} 哈希{last_received_image_hash[:8] if last_received_image_hash else 'None'}...")
+                        print(f"🔍 [图片调试] 当前哈希: {image_hash[:8] if image_hash else 'None'}... 上次哈希: {last_clipboard_hash[:8] if last_clipboard_hash else 'None'}... 接收哈希: {last_received_hash[:8] if last_received_hash else 'None'}...")
                     
-                    if image_hash and image_hash != last_clipboard_image_hash:
+                    if image_hash and image_hash != last_clipboard_hash:
                         # 图片发生变化
                         
                         # 检查是否是刚接收的图片（避免循环上传）
-                        if is_same_image(image_hash, image_dimensions, last_received_image_hash, last_received_image_size):
+                        if last_received_hash and image_hash == last_received_hash:
                             elapsed = time.time() - last_received_time
-                            print(f"⏭️  跳过刚接收的图片 {image_dimensions[0]}x{image_dimensions[1]} (接收后 {elapsed:.1f}秒)")
-                            last_clipboard_image_hash = image_hash
-                            last_clipboard_image_size = image_dimensions
+                            print(f"⏭️  跳过刚接收的图片 {current_image.width()}x{current_image.height()} (接收后 {elapsed:.1f}秒)")
+                            last_clipboard_hash = image_hash
                             continue
                         
-                        last_clipboard_image_hash = image_hash
-                        last_clipboard_image_size = image_dimensions
+                        last_clipboard_hash = image_hash
                         last_clipboard_files = []
                         
                         # 检查图片大小
@@ -542,21 +548,16 @@ def sync_from_server(tray_app):
                         image_width = data.get("image_width", 0)
                         image_height = data.get("image_height", 0)
                         image_size = data.get("image_size", 0)
+                        content_hash = data.get("content_hash")  # 直接使用服务器传来的哈希
                         
                         if image_data:
                             # 解码图片
                             image = base64_to_image(image_data)
                             if image:
-                                # 记录接收的图片哈希和尺寸，避免循环上传
-                                image_hash = get_image_hash(image)
-                                image_dimensions = (image_width, image_height)
-                                
                                 # 必须在设置到剪贴板之前就更新所有哈希值
                                 # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时哈希还未更新
-                                last_received_image_hash = image_hash
-                                last_received_image_size = image_dimensions
-                                last_clipboard_image_hash = image_hash
-                                last_clipboard_image_size = image_dimensions
+                                last_received_hash = content_hash
+                                last_clipboard_hash = content_hash
                                 last_received_time = time.time()
                                 last_clipboard_files = []
                                 
@@ -565,7 +566,7 @@ def sync_from_server(tray_app):
                                 
                                 # 调试信息
                                 if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                                    print(f"🔍 [接收] 图片已设置: {image_dimensions} 哈希{image_hash[:8] if image_hash else 'None'}...")
+                                    print(f"🔍 [接收] 图片已设置，哈希: {content_hash[:8] if content_hash else 'None'}...")
                                 
                                 print(f"↓ 从服务端同步图片: {image_width}x{image_height} ({image_size/1024:.1f}KB)")
                                 if ENABLE_POPUP:
@@ -582,6 +583,7 @@ def sync_from_server(tray_app):
                         file_name = data.get("file_name")
                         file_data = data.get("file_data")
                         file_size = data.get("file_size", 0)
+                        content_hash = data.get("content_hash")  # 直接使用服务器传来的哈希
                         
                         if file_name and file_data:
                             # 保存文件到临时目录
@@ -589,6 +591,8 @@ def sync_from_server(tray_app):
                             if saved_path:
                                 # 必须在设置到剪贴板之前就更新状态
                                 # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时状态还未更新
+                                last_received_hash = content_hash
+                                last_clipboard_hash = content_hash
                                 last_received_file = saved_path
                                 last_clipboard_files = [saved_path]
                                 last_received_time = time.time()
@@ -607,7 +611,14 @@ def sync_from_server(tray_app):
                     else:
                         # 处理文本同步
                         new_text = data.get("content", "")
+                        content_hash = data.get("content_hash")  # 直接使用服务器传来的哈希
+                        
                         if new_text != last_clipboard_text:
+                            # 在设置剪贴板之前更新哈希
+                            last_received_hash = content_hash
+                            last_clipboard_hash = content_hash
+                            last_received_time = time.time()
+                            
                             pyperclip.copy(new_text)
                             last_clipboard_text = new_text
                             last_clipboard_files = []
