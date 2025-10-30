@@ -523,7 +523,7 @@ def clipboard_watcher(tray_app):
                     if current_text != last_clipboard_text:
                         last_clipboard_text = current_text
                         last_clipboard_files = []
-                        last_clipboard_image_hash = None
+                        last_clipboard_hash = None
                         upload_clipboard(tray_app, content_type="text", text=current_text)
         except Exception as e:
             print("❌ 剪贴板监听错误:", e)
@@ -531,10 +531,8 @@ def clipboard_watcher(tray_app):
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
-    global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_image_hash
-    global last_received_file, last_received_image_hash, last_received_time
-    global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_image_hash
-    global last_received_file, last_received_image_hash, last_received_time
+    global last_sync_time, last_clipboard_text, last_clipboard_files, last_clipboard_hash
+    global last_received_file, last_received_hash, last_received_time, is_setting_clipboard
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
