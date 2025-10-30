@@ -551,15 +551,17 @@ def sync_from_server(tray_app):
                                 image_hash = get_image_hash(image)
                                 image_dimensions = (image_width, image_height)
                                 
+                                # 必须在设置到剪贴板之前就更新所有哈希值
+                                # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时哈希还未更新
                                 last_received_image_hash = image_hash
                                 last_received_image_size = image_dimensions
+                                last_clipboard_image_hash = image_hash
+                                last_clipboard_image_size = image_dimensions
                                 last_received_time = time.time()
+                                last_clipboard_files = []
                                 
                                 # 使用线程安全的方法设置图片到剪贴板
                                 tray_app.safe_set_image(image)
-                                last_clipboard_image_hash = image_hash
-                                last_clipboard_image_size = image_dimensions
-                                last_clipboard_files = []
                                 
                                 # 调试信息
                                 if os.environ.get("SYNCCLIP_DEBUG") == "1":
@@ -585,13 +587,14 @@ def sync_from_server(tray_app):
                             # 保存文件到临时目录
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
-                                # 记录接收的文件和时间，避免循环上传
+                                # 必须在设置到剪贴板之前就更新状态
+                                # 否则clipboard_watcher会在剪贴板变化瞬间检测到，此时状态还未更新
                                 last_received_file = saved_path
+                                last_clipboard_files = [saved_path]
                                 last_received_time = time.time()
                                 
                                 # 使用线程安全的方法设置文件到剪贴板
                                 tray_app.safe_set_file(saved_path)
-                                last_clipboard_files = [saved_path]
                                 print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
@@ -733,24 +736,6 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def safe_set_file(self, file_path):
         """线程安全的文件设置方法"""
         self.set_file_signal.emit(file_path)
-    
-    def _set_image_to_clipboard(self, image):
-        """在主线程中设置图片到剪贴板（槽函数）"""
-        try:
-            clipboard = QtWidgets.QApplication.clipboard()
-            clipboard.setImage(image)
-            
-            print(f"✅ 图片已设置到剪贴板: {image.width()}x{image.height()}")
-            print(f"💡 现在可以按 Ctrl+V 粘贴图片")
-            
-        except Exception as e:
-            print(f"❌ 设置图片到剪贴板失败: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def safe_set_image(self, image):
-        """线程安全的图片设置方法"""
-        self.set_image_signal.emit(image)
     
     def _set_image_to_clipboard(self, image):
         """在主线程中设置图片到剪贴板（槽函数）"""
