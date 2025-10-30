@@ -71,12 +71,42 @@ else:
 DEVICE_ID = f"{platform.node()}-{uuid.uuid4().hex[:6]}"
 last_clipboard_text = ""
 last_clipboard_files = []  # 记录上次的文件列表
+last_received_file = None  # 记录最后接收的文件路径，避免重复上传
+last_received_time = 0  # 记录接收时间
 last_sync_time = None
 stop_flag = False
+
+# 接收文件后的保护时间（秒）- 在此期间相同文件不会被上传
+RECEIVED_FILE_PROTECTION_TIME = 3
 
 # =======================
 # 文件处理辅助函数
 # =======================
+def is_same_file(file1, file2):
+    """检查两个文件是否相同（通过文件名和大小）"""
+    if not file1 or not file2:
+        return False
+    
+    # 如果是同一个路径，直接返回True
+    if os.path.abspath(file1) == os.path.abspath(file2):
+        return True
+    
+    # 比较文件名和大小
+    try:
+        name1 = os.path.basename(file1)
+        name2 = os.path.basename(file2)
+        
+        if name1 == name2:
+            size1 = os.path.getsize(file1) if os.path.exists(file1) else -1
+            size2 = os.path.getsize(file2) if os.path.exists(file2) else -1
+            
+            if size1 == size2 and size1 > 0:
+                return True
+    except Exception as e:
+        print(f"⚠️  文件比较错误: {e}")
+    
+    return False
+
 def get_clipboard_files():
     """获取剪贴板中的文件列表（使用PyQt5）"""
     try:
@@ -139,35 +169,24 @@ def base64_to_file(base64_data, file_name, target_dir=None):
         return None
 
 def set_clipboard_file(file_path):
-    """将文件设置到剪贴板"""
+    """将文件设置到剪贴板（仅用于主线程直接调用）"""
     try:
         clipboard = QtWidgets.QApplication.clipboard()
         mime_data = QtCore.QMimeData()
         
-        # 确保文件路径存在
         if not os.path.exists(file_path):
             print(f"❌ 文件不存在: {file_path}")
             return False
         
-        # macOS特殊处理：规范化路径
-        if platform.system() == "Darwin":
-            file_path = os.path.abspath(file_path)
-        
+        file_path = os.path.abspath(file_path)
         url = QtCore.QUrl.fromLocalFile(file_path)
         mime_data.setUrls([url])
-        
         clipboard.setMimeData(mime_data)
         
-        # macOS需要稍微等待一下让剪贴板生效
-        if platform.system() == "Darwin":
-            QtCore.QThread.msleep(50)
-        
+        print(f"✅ 文件已设置到剪贴板: {file_path}")
         return True
     except Exception as e:
         print(f"❌ 设置文件到剪贴板失败: {e}")
-        import traceback
-        if platform.system() == "Darwin":
-            traceback.print_exc()
         return False
 
 # =======================
@@ -252,13 +271,18 @@ def fetch_clipboard():
 
 def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
-    global last_clipboard_text, last_clipboard_files
+    global last_clipboard_text, last_clipboard_files, last_received_file, last_received_time
     
     # macOS调试模式
     macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
     
     while not stop_flag:
         try:
+            # 检查保护时间是否过期
+            if last_received_file and (time.time() - last_received_time > RECEIVED_FILE_PROTECTION_TIME):
+                print(f"🕐 接收文件保护期已过，清除记录")
+                last_received_file = None
+            
             # 优先检查文件
             current_files = get_clipboard_files()
             
@@ -267,6 +291,15 @@ def clipboard_watcher(tray_app):
             
             if current_files and current_files != last_clipboard_files:
                 # 剪贴板有文件且发生变化
+                file_path = current_files[0]
+                
+                # 检查是否是刚刚接收的文件（避免循环上传）
+                if last_received_file and is_same_file(file_path, last_received_file):
+                    elapsed = time.time() - last_received_time
+                    print(f"⏭️  跳过刚接收的文件: {os.path.basename(file_path)} (接收后 {elapsed:.1f}秒)")
+                    last_clipboard_files = current_files
+                    continue
+                
                 last_clipboard_files = current_files
                 
                 # 检查是否启用文件同步
@@ -275,7 +308,6 @@ def clipboard_watcher(tray_app):
                     print(f"⏭️  检测到文件，但文件同步已禁用")
                 else:
                     # 只同步第一个文件
-                    file_path = current_files[0]
                     file_size = os.path.getsize(file_path)
                     file_name = os.path.basename(file_path)
                     
@@ -308,7 +340,7 @@ def clipboard_watcher(tray_app):
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
-    global last_sync_time, last_clipboard_text, last_clipboard_files
+    global last_sync_time, last_clipboard_text, last_clipboard_files, last_received_file, last_received_time
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
@@ -328,18 +360,22 @@ def sync_from_server(tray_app):
                             # 保存文件到临时目录
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
-                                # 将文件设置到剪贴板
-                                if set_clipboard_file(saved_path):
-                                    last_clipboard_files = [saved_path]
-                                    print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
-                                    if ENABLE_POPUP:
-                                        tray_app.safe_notify(
-                                            "📥 文件同步",
-                                            f"已接收: {file_name}\n保存在: {os.path.dirname(saved_path)}",
-                                            QtWidgets.QSystemTrayIcon.Information,
-                                            3000
-                                        )
-                                    play_sound()
+                                # 记录接收的文件和时间，避免循环上传
+                                last_received_file = saved_path
+                                last_received_time = time.time()
+                                
+                                # 使用线程安全的方法设置文件到剪贴板
+                                tray_app.safe_set_file(saved_path)
+                                last_clipboard_files = [saved_path]
+                                print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
+                                if ENABLE_POPUP:
+                                    tray_app.safe_notify(
+                                        "📥 文件同步",
+                                        f"已接收: {file_name}\n💡 按 Ctrl+V 可直接粘贴",
+                                        QtWidgets.QSystemTrayIcon.Information,
+                                        4000
+                                    )
+                                play_sound()
                     else:
                         # 处理文本同步
                         new_text = data.get("content", "")
@@ -366,6 +402,7 @@ def sync_from_server(tray_app):
 class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     # 定义自定义信号（必须在类级别定义）
     notify_signal = QtCore.pyqtSignal(str, str, int, int)  # title, message, icon, duration
+    set_file_signal = QtCore.pyqtSignal(str)  # file_path - 在主线程设置文件到剪贴板
     
     def __init__(self, icon, parent=None):
         super(ClipboardTrayApp, self).__init__(icon, parent)
@@ -378,6 +415,7 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         
         # 连接信号到槽函数
         self.notify_signal.connect(self._show_notification)
+        self.set_file_signal.connect(self._set_file_to_clipboard)
         
         # Windows特定：设置AppUserModelID
         if platform.system() == "Windows":
@@ -436,6 +474,36 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def safe_notify(self, title, message, icon=QtWidgets.QSystemTrayIcon.Information, duration=2000):
         """线程安全的通知方法"""
         self.notify_signal.emit(title, message, icon, duration)
+    
+    def _set_file_to_clipboard(self, file_path):
+        """在主线程中设置文件到剪贴板（槽函数）"""
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+            mime_data = QtCore.QMimeData()
+            
+            if not os.path.exists(file_path):
+                print(f"❌ 文件不存在: {file_path}")
+                return
+            
+            # 使用绝对路径
+            file_path = os.path.abspath(file_path)
+            
+            url = QtCore.QUrl.fromLocalFile(file_path)
+            mime_data.setUrls([url])
+            
+            clipboard.setMimeData(mime_data)
+            
+            print(f"✅ 文件已设置到剪贴板: {file_path}")
+            print(f"💡 现在可以按 Ctrl+V 粘贴文件")
+            
+        except Exception as e:
+            print(f"❌ 设置文件到剪贴板失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def safe_set_file(self, file_path):
+        """线程安全的文件设置方法"""
+        self.set_file_signal.emit(file_path)
 
     def show_clipboard_content(self):
         content = pyperclip.paste()
