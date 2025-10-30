@@ -417,11 +417,20 @@ def clipboard_watcher(tray_app):
     
     while not stop_flag:
         try:
-            # 检查保护时间是否过期
-            if last_received_hash and (time.time() - last_received_time > RECEIVED_FILE_PROTECTION_TIME):
-                print(f"🕐 接收内容保护期已过，清除记录")
-                last_received_hash = None
-                last_received_file = None
+            # 检查是否在保护期内（接收内容后的3秒内不检测剪贴板变化）
+            if last_received_time > 0:
+                elapsed = time.time() - last_received_time
+                if elapsed <= RECEIVED_FILE_PROTECTION_TIME:
+                    # 保护期内，跳过剪贴板检测
+                    time.sleep(0.3)
+                    continue
+                else:
+                    # 保护期已过，清除记录
+                    if last_received_hash:
+                        print(f"🕐 接收内容保护期已过，恢复剪贴板检测")
+                        last_received_hash = None
+                        last_received_file = None
+                        last_received_time = 0
             
             # 优先检查文件
             current_files = get_clipboard_files()
@@ -432,14 +441,6 @@ def clipboard_watcher(tray_app):
             if current_files and current_files != last_clipboard_files:
                 # 剪贴板有文件且发生变化
                 file_path = current_files[0]
-                
-                # 检查是否是刚刚接收的文件（避免循环上传）
-                if last_received_file and is_same_file(file_path, last_received_file):
-                    elapsed = time.time() - last_received_time
-                    print(f"⏭️  跳过刚接收的文件: {os.path.basename(file_path)} (接收后 {elapsed:.1f}秒)")
-                    last_clipboard_files = current_files
-                    continue
-                
                 last_clipboard_files = current_files
                 
                 # 检查是否启用文件同步
@@ -477,18 +478,10 @@ def clipboard_watcher(tray_app):
                     
                     # 调试信息
                     if os.environ.get("SYNCCLIP_DEBUG") == "1":
-                        print(f"🔍 [图片调试] 当前哈希: {image_hash[:8] if image_hash else 'None'}... 上次哈希: {last_clipboard_hash[:8] if last_clipboard_hash else 'None'}... 接收哈希: {last_received_hash[:8] if last_received_hash else 'None'}...")
+                        print(f"🔍 [图片调试] 当前哈希: {image_hash[:8] if image_hash else 'None'}... 上次哈希: {last_clipboard_hash[:8] if last_clipboard_hash else 'None'}...")
                     
                     if image_hash and image_hash != last_clipboard_hash:
                         # 图片发生变化
-                        
-                        # 检查是否是刚接收的图片（避免循环上传）
-                        if last_received_hash and image_hash == last_received_hash:
-                            elapsed = time.time() - last_received_time
-                            print(f"⏭️  跳过刚接收的图片 {current_image.width()}x{current_image.height()} (接收后 {elapsed:.1f}秒)")
-                            last_clipboard_hash = image_hash
-                            continue
-                        
                         last_clipboard_hash = image_hash
                         last_clipboard_files = []
                         
