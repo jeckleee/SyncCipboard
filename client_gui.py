@@ -8,6 +8,9 @@ import subprocess
 import requests
 import pyperclip
 import configparser
+import base64
+import tempfile
+from pathlib import Path
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # =======================
@@ -52,10 +55,120 @@ SYNC_INTERVAL = config.getfloat("client", "sync_interval", fallback=1.0)
 ENABLE_SOUND = config.getboolean("client", "enable_sound", fallback=True)
 ENABLE_POPUP = config.getboolean("client", "enable_popup", fallback=True)
 
+# 文件同步配置
+max_file_size_str = config.get("client", "max_file_size", fallback="false").strip().lower()
+if max_file_size_str == "false":
+    MAX_FILE_SIZE = None  # 不同步文件
+elif max_file_size_str == "0":
+    MAX_FILE_SIZE = 0  # 无限制
+else:
+    try:
+        MAX_FILE_SIZE = float(max_file_size_str) * 1024 * 1024  # 转换为字节
+    except ValueError:
+        MAX_FILE_SIZE = None
+        print(f"⚠️  配置项 max_file_size 格式错误: {max_file_size_str}，将不同步文件")
+
 DEVICE_ID = f"{platform.node()}-{uuid.uuid4().hex[:6]}"
 last_clipboard_text = ""
+last_clipboard_files = []  # 记录上次的文件列表
 last_sync_time = None
 stop_flag = False
+
+# =======================
+# 文件处理辅助函数
+# =======================
+def get_clipboard_files():
+    """获取剪贴板中的文件列表（使用PyQt5）"""
+    try:
+        clipboard = QtWidgets.QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        if mime_data.hasUrls():
+            files = []
+            for url in mime_data.urls():
+                # macOS可能返回file://格式的URL
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    
+                    # macOS特殊处理：有时路径可能需要规范化
+                    if platform.system() == "Darwin":
+                        file_path = os.path.normpath(file_path)
+                    
+                    if os.path.isfile(file_path):
+                        files.append(file_path)
+            return files
+    except Exception as e:
+        print(f"❌ 获取剪贴板文件失败: {e}")
+        import traceback
+        if platform.system() == "Darwin":
+            traceback.print_exc()
+    return []
+
+def file_to_base64(file_path):
+    """将文件转换为Base64编码"""
+    try:
+        with open(file_path, 'rb') as f:
+            return base64.b64encode(f.read()).decode('utf-8')
+    except Exception as e:
+        print(f"❌ 文件编码失败 {file_path}: {e}")
+        return None
+
+def base64_to_file(base64_data, file_name, target_dir=None):
+    """将Base64数据保存为文件"""
+    try:
+        if target_dir is None:
+            target_dir = tempfile.gettempdir()
+        
+        file_path = os.path.join(target_dir, file_name)
+        
+        # 如果文件已存在，添加序号
+        if os.path.exists(file_path):
+            name, ext = os.path.splitext(file_name)
+            counter = 1
+            while os.path.exists(file_path):
+                file_path = os.path.join(target_dir, f"{name}_{counter}{ext}")
+                counter += 1
+        
+        file_data = base64.b64decode(base64_data)
+        with open(file_path, 'wb') as f:
+            f.write(file_data)
+        
+        return file_path
+    except Exception as e:
+        print(f"❌ 文件解码失败: {e}")
+        return None
+
+def set_clipboard_file(file_path):
+    """将文件设置到剪贴板"""
+    try:
+        clipboard = QtWidgets.QApplication.clipboard()
+        mime_data = QtCore.QMimeData()
+        
+        # 确保文件路径存在
+        if not os.path.exists(file_path):
+            print(f"❌ 文件不存在: {file_path}")
+            return False
+        
+        # macOS特殊处理：规范化路径
+        if platform.system() == "Darwin":
+            file_path = os.path.abspath(file_path)
+        
+        url = QtCore.QUrl.fromLocalFile(file_path)
+        mime_data.setUrls([url])
+        
+        clipboard.setMimeData(mime_data)
+        
+        # macOS需要稍微等待一下让剪贴板生效
+        if platform.system() == "Darwin":
+            QtCore.QThread.msleep(50)
+        
+        return True
+    except Exception as e:
+        print(f"❌ 设置文件到剪贴板失败: {e}")
+        import traceback
+        if platform.system() == "Darwin":
+            traceback.print_exc()
+        return False
 
 # =======================
 # 系统提示音
@@ -78,22 +191,53 @@ def play_sound():
 # =======================
 # 剪贴板同步逻辑
 # =======================
-def upload_clipboard(tray_app, text):
+def upload_clipboard(tray_app, content_type="text", text="", file_path=None):
     """上传剪贴板内容到服务端"""
     try:
-        requests.post(f"{SERVER_URL}/upload", json={
-            "device_id": DEVICE_ID,
-            "content": text
-        }, timeout=3)
-        if ENABLE_POPUP:
-            tray_app.showMessage(
-                "📤 剪贴板同步",
-                "上传成功",
-                QtWidgets.QSystemTrayIcon.Information,
-                2000
-            )
-        play_sound()
-        print(f"↑ 已上传: {text[:30]!r}")
+        if content_type == "file" and file_path:
+            # 上传文件
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            file_data = file_to_base64(file_path)
+            
+            if file_data is None:
+                print(f"❌ 文件编码失败: {file_path}")
+                return
+            
+            requests.post(f"{SERVER_URL}/upload", json={
+                "device_id": DEVICE_ID,
+                "content_type": "file",
+                "file_name": file_name,
+                "file_data": file_data,
+                "file_size": file_size
+            }, timeout=10)
+            
+            if ENABLE_POPUP:
+                tray_app.safe_notify(
+                    "📤 文件同步",
+                    f"已上传: {file_name} ({file_size/1024:.1f}KB)",
+                    QtWidgets.QSystemTrayIcon.Information,
+                    2000
+                )
+            play_sound()
+            print(f"↑ 已上传文件: {file_name} ({file_size/1024:.1f}KB)")
+        else:
+            # 上传文本
+            requests.post(f"{SERVER_URL}/upload", json={
+                "device_id": DEVICE_ID,
+                "content_type": "text",
+                "content": text
+            }, timeout=3)
+            
+            if ENABLE_POPUP:
+                tray_app.safe_notify(
+                    "📤 剪贴板同步",
+                    "上传成功",
+                    QtWidgets.QSystemTrayIcon.Information,
+                    2000
+                )
+            play_sound()
+            print(f"↑ 已上传文本: {text[:30]!r}")
     except Exception as e:
         print("❌ 上传失败:", e)
 
@@ -108,20 +252,63 @@ def fetch_clipboard():
 
 def clipboard_watcher(tray_app):
     """监听剪贴板变化"""
-    global last_clipboard_text
+    global last_clipboard_text, last_clipboard_files
+    
+    # macOS调试模式
+    macos_debug = platform.system() == "Darwin" and os.environ.get("SYNCCLIP_DEBUG") == "1"
+    
     while not stop_flag:
         try:
-            current_text = pyperclip.paste()
-            if current_text != last_clipboard_text:
-                last_clipboard_text = current_text
-                upload_clipboard(tray_app, current_text)
+            # 优先检查文件
+            current_files = get_clipboard_files()
+            
+            if macos_debug and current_files:
+                print(f"🔍 [macOS调试] 检测到文件: {current_files}")
+            
+            if current_files and current_files != last_clipboard_files:
+                # 剪贴板有文件且发生变化
+                last_clipboard_files = current_files
+                
+                # 检查是否启用文件同步
+                if MAX_FILE_SIZE is None:
+                    # 不同步文件（静默）
+                    print(f"⏭️  检测到文件，但文件同步已禁用")
+                else:
+                    # 只同步第一个文件
+                    file_path = current_files[0]
+                    file_size = os.path.getsize(file_path)
+                    file_name = os.path.basename(file_path)
+                    
+                    # 检查文件大小限制
+                    if MAX_FILE_SIZE == 0 or file_size <= MAX_FILE_SIZE:
+                        # 可以同步
+                        upload_clipboard(tray_app, content_type="file", file_path=file_path)
+                    else:
+                        # 文件超出限制
+                        max_mb = MAX_FILE_SIZE / (1024 * 1024)
+                        file_mb = file_size / (1024 * 1024)
+                        print(f"⚠️  文件过大: {file_name} ({file_mb:.1f}MB > {max_mb:.1f}MB)")
+                        if ENABLE_POPUP:
+                            tray_app.safe_notify(
+                                "⚠️  文件过大",
+                                f"{file_name}\n大小 {file_mb:.1f}MB 超出限制 {max_mb:.1f}MB",
+                                QtWidgets.QSystemTrayIcon.Warning,
+                                3000
+                            )
+            elif not current_files:
+                # 剪贴板中没有文件，检查文本
+                current_text = pyperclip.paste()
+                if current_text != last_clipboard_text:
+                    last_clipboard_text = current_text
+                    last_clipboard_files = []  # 清空文件记录
+                    upload_clipboard(tray_app, content_type="text", text=current_text)
         except Exception as e:
             print("❌ 剪贴板监听错误:", e)
         time.sleep(0.5)
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新"""
-    global last_sync_time, last_clipboard_text
+    global last_sync_time, last_clipboard_text, last_clipboard_files
     while not stop_flag:
         data = fetch_clipboard()
         if data and data.get("updated_at"):
@@ -129,19 +316,47 @@ def sync_from_server(tray_app):
             if (not last_sync_time) or updated_at > last_sync_time:
                 # 跳过自己上传的内容
                 if data.get("device_id") != DEVICE_ID:
-                    new_text = data["content"]
-                    if new_text != last_clipboard_text:
-                        pyperclip.copy(new_text)
-                        last_clipboard_text = new_text
-                        print(f"↓ 从服务端同步: {new_text[:30]!r}")
-                        if ENABLE_POPUP:
-                            tray_app.showMessage(
-                                "📥 剪贴板同步",
-                                "已接收到来自其他设备的新内容",
-                                QtWidgets.QSystemTrayIcon.Information,
-                                3000
-                            )
-                        play_sound()
+                    content_type = data.get("content_type", "text")
+                    
+                    if content_type == "file":
+                        # 处理文件同步
+                        file_name = data.get("file_name")
+                        file_data = data.get("file_data")
+                        file_size = data.get("file_size", 0)
+                        
+                        if file_name and file_data:
+                            # 保存文件到临时目录
+                            saved_path = base64_to_file(file_data, file_name)
+                            if saved_path:
+                                # 将文件设置到剪贴板
+                                if set_clipboard_file(saved_path):
+                                    last_clipboard_files = [saved_path]
+                                    print(f"↓ 从服务端同步文件: {file_name} ({file_size/1024:.1f}KB)")
+                                    if ENABLE_POPUP:
+                                        tray_app.safe_notify(
+                                            "📥 文件同步",
+                                            f"已接收: {file_name}\n保存在: {os.path.dirname(saved_path)}",
+                                            QtWidgets.QSystemTrayIcon.Information,
+                                            3000
+                                        )
+                                    play_sound()
+                    else:
+                        # 处理文本同步
+                        new_text = data.get("content", "")
+                        if new_text != last_clipboard_text:
+                            pyperclip.copy(new_text)
+                            last_clipboard_text = new_text
+                            last_clipboard_files = []
+                            print(f"↓ 从服务端同步文本: {new_text[:30]!r}")
+                            if ENABLE_POPUP:
+                                tray_app.safe_notify(
+                                    "📥 剪贴板同步",
+                                    "已接收到来自其他设备的新内容",
+                                    QtWidgets.QSystemTrayIcon.Information,
+                                    3000
+                                )
+                            play_sound()
+                
                 last_sync_time = updated_at
         time.sleep(SYNC_INTERVAL)
 
@@ -149,10 +364,31 @@ def sync_from_server(tray_app):
 # 托盘应用部分
 # =======================
 class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
+    # 定义自定义信号（必须在类级别定义）
+    notify_signal = QtCore.pyqtSignal(str, str, int, int)  # title, message, icon, duration
+    
     def __init__(self, icon, parent=None):
         super(ClipboardTrayApp, self).__init__(icon, parent)
+        
+        # 关键：先显示托盘图标，Windows需要这样才能显示通知
+        self.show()
+        
         self.setToolTip(f"📋 {APP_NAME} v{APP_VERSION}")
         self.menu = QtWidgets.QMenu(parent)
+        
+        # 连接信号到槽函数
+        self.notify_signal.connect(self._show_notification)
+        
+        # Windows特定：设置AppUserModelID
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    f"{APP_NAME}.SyncClipboard.App.{APP_VERSION}"
+                )
+                print("✅ 已设置Windows AppUserModelID")
+            except Exception as e:
+                print(f"⚠️  设置AppUserModelID失败: {e}")
 
         # 查看当前剪贴板
         show_action = self.menu.addAction("查看当前剪贴板")
@@ -174,14 +410,32 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         threading.Thread(target=clipboard_watcher, args=(self,), daemon=True).start()
         threading.Thread(target=sync_from_server, args=(self,), daemon=True).start()
 
-        self.show()
+        # 延迟显示启动通知（Windows需要等托盘图标完全初始化）
         if ENABLE_POPUP:
-            self.showMessage(
-                f"📋 {APP_NAME}",
-                f"v{APP_VERSION} 已启动（同步间隔 {SYNC_INTERVAL}s）",
-                QtWidgets.QSystemTrayIcon.Information,
-                2500
-            )
+            QtCore.QTimer.singleShot(500, self._show_startup_notification)
+    
+    def _show_startup_notification(self):
+        """显示启动通知"""
+        self.showMessage(
+            f"📋 {APP_NAME}",
+            f"v{APP_VERSION} 已启动（同步间隔 {SYNC_INTERVAL}s）",
+            QtWidgets.QSystemTrayIcon.Information,
+            2500
+        )
+        print(f"✅ 启动通知已显示")
+    
+    def _show_notification(self, title, message, icon, duration):
+        """在主线程中显示通知（槽函数）"""
+        # 确保托盘图标可见
+        if not self.isVisible():
+            self.show()
+        
+        print(f"📢 [通知] {title}: {message}")
+        self.showMessage(title, message, icon, duration)
+    
+    def safe_notify(self, title, message, icon=QtWidgets.QSystemTrayIcon.Information, duration=2000):
+        """线程安全的通知方法"""
+        self.notify_signal.emit(title, message, icon, duration)
 
     def show_clipboard_content(self):
         content = pyperclip.paste()
@@ -194,11 +448,11 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         if data and data.get("content"):
             pyperclip.copy(data["content"])
             if ENABLE_POPUP:
-                self.showMessage("📋 手动同步", "已从服务端更新内容", QtWidgets.QSystemTrayIcon.Information, 2000)
+                self.safe_notify("📋 手动同步", "已从服务端更新内容", QtWidgets.QSystemTrayIcon.Information, 2000)
             play_sound()
         else:
             if ENABLE_POPUP:
-                self.showMessage("📋 手动同步", "未获取到有效数据", QtWidgets.QSystemTrayIcon.Warning, 2000)
+                self.safe_notify("📋 手动同步", "未获取到有效数据", QtWidgets.QSystemTrayIcon.Warning, 2000)
 
     def exit_app(self):
         global stop_flag
@@ -213,16 +467,45 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     
+    # Windows特定设置
+    if platform.system() == "Windows":
+        app.setQuitOnLastWindowClosed(False)  # 防止没有窗口时退出
+    
     # 加载应用图标
     if APP_ICON and os.path.exists(APP_ICON):
         icon = QtGui.QIcon(APP_ICON)
     else:
         icon = QtGui.QIcon.fromTheme("edit-paste")
+        # 如果主题图标不可用，创建一个简单图标
+        if icon.isNull():
+            pixmap = QtGui.QPixmap(32, 32)
+            pixmap.fill(QtGui.QColor(30, 144, 255))
+            icon = QtGui.QIcon(pixmap)
     
     tray_app = ClipboardTrayApp(icon)
+    
+    # 诊断信息
     print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动")
     print(f"📱 设备ID: {DEVICE_ID}")
     print(f"🔗 服务端地址: {SERVER_URL}")
+    print(f"🖥️  操作系统: {platform.system()}")
+    print(f"⚙️  系统托盘可用: {QtWidgets.QSystemTrayIcon.isSystemTrayAvailable()}")
+    print(f"⚙️  支持通知消息: {tray_app.supportsMessages()}")
+    
+    # 文件同步配置信息
+    if MAX_FILE_SIZE is None:
+        print(f"📁 文件同步: 已禁用")
+    elif MAX_FILE_SIZE == 0:
+        print(f"📁 文件同步: 已启用（无大小限制）")
+    else:
+        print(f"📁 文件同步: 已启用（限制 {MAX_FILE_SIZE/(1024*1024):.1f}MB）")
+    
+    if not tray_app.supportsMessages():
+        print("⚠️  警告: 当前系统不支持托盘通知！")
+        print("💡 请检查Windows通知设置:")
+        print("   设置 -> 系统 -> 通知和操作")
+        print("   确保'获取来自应用和其他发送者的通知'已开启")
+    
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
