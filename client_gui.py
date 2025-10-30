@@ -305,40 +305,9 @@ def play_sound():
 # 剪贴板同步逻辑
 # =======================
 def upload_clipboard(tray_app, content_type="text", text="", file_path=None, image=None):
-def upload_clipboard(tray_app, content_type="text", text="", file_path=None, image=None):
+    
     """上传剪贴板内容到服务端"""
     try:
-        if content_type == "image" and image:
-            # 上传图片
-            image_data = image_to_base64(image)
-            if image_data is None:
-                print(f"❌ 图片编码失败")
-                return
-            
-            image_size = len(image_data)
-            width = image.width()
-            height = image.height()
-            
-            requests.post(f"{SERVER_URL}/upload", json={
-                "device_id": DEVICE_ID,
-                "content_type": "image",
-                "image_data": image_data,
-                "image_width": width,
-                "image_height": height,
-                "image_size": image_size
-            }, timeout=15)
-            
-            if ENABLE_POPUP:
-                tray_app.safe_notify(
-                    "📤 图片同步",
-                    f"已上传: {width}x{height} ({image_size/1024:.1f}KB)",
-                    QtWidgets.QSystemTrayIcon.Information,
-                    2000
-                )
-            play_sound()
-            print(f"↑ 已上传图片: {width}x{height} ({image_size/1024:.1f}KB)")
-            
-        elif content_type == "file" and file_path:
         if content_type == "image" and image:
             # 上传图片
             image_data = image_to_base64(image)
