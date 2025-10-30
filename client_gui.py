@@ -451,15 +451,34 @@ def clipboard_watcher(tray_app):
             if current_files and current_files != last_clipboard_files:
                 # 剪贴板有文件且发生变化
                 file_path = current_files[0]
+                has_directory = any(os.path.isdir(path) for path in current_files)
 
-                if skip_next_clipboard_change:
+                if skip_next_clipboard_change and not has_directory:
                     if os.environ.get("SYNCCLIP_DEBUG") == "1":
                         print(f"⏭️  跳过同步后的文件变化: {file_path}")
                     last_clipboard_files = current_files
                     skip_next_clipboard_change = False
                     continue
 
+                # 对于文件夹，跳过一次标记不生效（需要继续处理）
+                if skip_next_clipboard_change and has_directory:
+                    if os.environ.get("SYNCCLIP_DEBUG") == "1":
+                        print(f"🛈 检测到文件夹复制，跳过标记失效: {current_files}")
+                    skip_next_clipboard_change = False
+
                 last_clipboard_files = current_files
+
+                if has_directory:
+                    dir_path = next(path for path in current_files if os.path.isdir(path))
+                    print(f"⛔️  暂不支持同步文件夹: {dir_path}")
+                    if ENABLE_POPUP:
+                        tray_app.safe_notify(
+                            "⛔️ 不支持的剪贴板类型",
+                            "当前版本暂不支持同步文件夹内容",
+                            QtWidgets.QSystemTrayIcon.Warning,
+                            3000
+                        )
+                    continue
                 
                 # 检查是否启用文件同步
                 if MAX_FILE_SIZE is None:
