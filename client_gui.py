@@ -853,6 +853,26 @@ def main():
             pixmap.fill(QtGui.QColor(30, 144, 255))
             icon = QtGui.QIcon(pixmap)
     
+    # 启动前清空剪贴板，避免脏数据触发同步
+    global last_clipboard_text, last_clipboard_files, last_clipboard_hash
+    global last_received_file, last_received_hash, last_received_time
+    global is_setting_clipboard, skip_next_clipboard_change
+
+    clipboard = QtWidgets.QApplication.clipboard()
+    clipboard.clear()
+    pyperclip.copy("")
+
+    last_clipboard_text = ""
+    last_clipboard_files = []
+    last_clipboard_hash = None
+    last_received_file = None
+    last_received_hash = None
+    last_received_time = 0
+    is_setting_clipboard = False
+    skip_next_clipboard_change = False
+
+    print("🧹 启动时已清空剪贴板")
+
     tray_app = ClipboardTrayApp(icon)
     
     # 诊断信息
