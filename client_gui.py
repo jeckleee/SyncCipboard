@@ -78,6 +78,25 @@ is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到
 SYNC_PROTECTION_SECONDS = 3  # 同步保护时间（秒）
 
 # =======================
+# HTTP Session 配置（启用 Keep-Alive）
+# =======================
+http_session = requests.Session()
+# 配置连接池：最大连接数和keep-alive
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=10,  # 连接池大小
+    pool_maxsize=20,      # 最大连接数
+    max_retries=0,        # 不自动重试（避免重复上传）
+    pool_block=False
+)
+http_session.mount('http://', adapter)
+http_session.mount('https://', adapter)
+# 设置默认请求头，明确启用 keep-alive
+http_session.headers.update({
+    'Connection': 'keep-alive',
+    'Keep-Alive': 'timeout=30, max=100'
+})
+
+# =======================
 # 辅助函数
 # =======================
 def get_timestamp():
@@ -258,7 +277,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             width = image.width()
             height = image.height()
             
-            response = requests.post(f"{SERVER_URL}/upload", json={
+            response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "image",
                 "image_data": image_data,
@@ -288,7 +307,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             if file_data is None:
                 return
             
-            response = requests.post(f"{SERVER_URL}/upload", json={
+            response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "file",
                 "file_name": file_name,
@@ -311,7 +330,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             # 上传文本
             text_preview = text[:30] if len(text) <= 30 else text[:30] + "..."
             
-            response = requests.post(f"{SERVER_URL}/upload", json={
+            response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
                 "content_type": "text",
                 "content": text
@@ -334,7 +353,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
 def fetch_clipboard():
     """从服务端拉取最新内容"""
     try:
-        r = requests.get(f"{SERVER_URL}/fetch", timeout=3)
+        r = http_session.get(f"{SERVER_URL}/fetch", timeout=3)
         return r.json()
     except Exception as e:
         print("❌ 拉取失败:", e)
@@ -692,6 +711,12 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def exit_app(self):
         global stop_flag
         stop_flag = True
+        # 关闭 HTTP Session，释放连接
+        try:
+            http_session.close()
+            print("✅ HTTP 连接已关闭")
+        except Exception as e:
+            print(f"⚠️ 关闭 HTTP 连接时出错: {e}")
         QtWidgets.QApplication.quit()
 
 # =======================
@@ -735,6 +760,7 @@ def main():
     print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动")
     print(f"📱 设备ID: {DEVICE_ID}")
     print(f"🔗 服务端地址: {SERVER_URL}")
+    print(f"🔌 HTTP Keep-Alive: 已启用（连接池大小: 10-20）")
     print(f"🖥️  操作系统: {platform.system()}")
     print(f"⚙️  系统托盘可用: {QtWidgets.QSystemTrayIcon.isSystemTrayAvailable()}")
     print(f"⚙️  支持通知消息: {tray_app.supportsMessages()}")
