@@ -1,5 +1,63 @@
 # 快速构建指南
 
+本指南提供 macOS 和 Windows 平台的快速构建方法。
+
+---
+
+## 🪟 Windows 平台打包
+
+### 快速开始
+
+#### 1️⃣ 准备环境
+
+```powershell
+# 安装依赖
+pip install -r requirements.txt
+pip install nuitka zstandard ordered-set
+
+# 安装 C 编译器（必需）
+# 下载安装 Visual Studio Community
+# https://visualstudio.microsoft.com/zh-hans/downloads/
+# 勾选 "使用 C++ 的桌面开发"
+```
+
+#### 2️⃣ 执行打包
+
+**方法一：使用批处理脚本（推荐）**
+```cmd
+build_windows.bat
+```
+
+**方法二：使用 PowerShell 脚本**
+```powershell
+.\build_windows.ps1
+```
+
+#### 3️⃣ 运行应用
+
+```cmd
+cd dist
+# 编辑 config.ini 配置服务器地址
+notepad config.ini
+# 运行应用
+SyncClipboard.exe
+```
+
+### 产物说明
+
+- **应用位置**：`dist\SyncClipboard.exe`
+- **应用大小**：约 30-50 MB（包含 Python 运行时和所有依赖）
+- **配置文件**：`dist\config.ini`（外部配置，可随时修改）
+- **架构**：x64
+
+### 详细文档
+
+完整的 Windows 打包指南、常见问题和高级选项，请参阅：**[BUILD_WINDOWS.md](BUILD_WINDOWS.md)**
+
+---
+
+## 🍎 macOS 平台打包
+
 ## 🚀 一键构建 macOS 应用
 
 ### 1️⃣ 准备环境
