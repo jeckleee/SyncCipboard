@@ -45,7 +45,7 @@ async def upload_clipboard(request: Request):
         clipboard_store["image_width"] = data.get("image_width", 0)
         clipboard_store["image_height"] = data.get("image_height", 0)
         clipboard_store["image_size"] = data.get("image_size", 0)
-        print(f"↑ 已上传图片: {clipboard_store['image_width']}x{clipboard_store['image_height']} ({clipboard_store['image_size']/1024:.1f}KB)")
+        print(f"↑ 收到[图片]: {clipboard_store['image_width']}x{clipboard_store['image_height']} ({clipboard_store['image_size']/1024:.1f}KB)")
     elif content_type == "file":
         # 文件数据
         clipboard_store["content"] = ""
@@ -56,7 +56,7 @@ async def upload_clipboard(request: Request):
         clipboard_store["image_width"] = 0
         clipboard_store["image_height"] = 0
         clipboard_store["image_size"] = 0
-        print(f"↑ 已上传文件: {clipboard_store['file_name']} ({clipboard_store['file_size']/1024:.1f}KB)")
+        print(f"↑ 收到[文件]: {clipboard_store['file_name']} ({clipboard_store['file_size']/1024:.1f}KB)")
     else:
         # 文本数据
         clipboard_store["content"] = data.get("content", "")
@@ -67,7 +67,7 @@ async def upload_clipboard(request: Request):
         clipboard_store["image_width"] = 0
         clipboard_store["image_height"] = 0
         clipboard_store["image_size"] = 0
-        print(f"↑ 已上传文本({len(clipboard_store['content'])}字): {clipboard_store['content'][:30]!r}")
+        print(f"↑ 收到[文本]({len(clipboard_store['content'])}字): {clipboard_store['content'][:30]!r}")
     
     return {"status": "ok", "updated_at": clipboard_store["updated_at"]}
 
