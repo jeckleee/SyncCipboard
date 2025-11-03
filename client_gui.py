@@ -52,6 +52,7 @@ APP_VERSION = config.get("global", "app_version", fallback="1.0.0")
 APP_ICON = config.get("global", "app_icon", fallback="")
 
 # 客户端配置
+CLIENT_NAME = config.get("client", "client_name", fallback=platform.node()).strip('"\'')
 SERVER_URL = config.get("client", "server_url", fallback="http://127.0.0.1:8000")
 SYNC_INTERVAL = config.getfloat("client", "sync_interval", fallback=1.0)
 ENABLE_SOUND = config.getboolean("client", "enable_sound", fallback=True)
@@ -73,6 +74,7 @@ else:
 DEVICE_ID = f"{platform.node()}-{uuid.uuid4().hex[:6]}"
 last_sync_time = None  # 最后一次从服务器同步的时间（服务器的updated_at）
 last_sync_download_time = 0  # 最后一次实际下载内容的本地时间戳（用于保护期）
+last_downloaded_file = None  # 最后一次下载的文件路径（用于清理）
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
 SYNC_PROTECTION_SECONDS = 3  # 同步保护时间（秒）
@@ -279,6 +281,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             
             response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
+                "client_name": CLIENT_NAME,
                 "content_type": "image",
                 "image_data": image_data,
                 "image_width": width,
@@ -309,6 +312,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             
             response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
+                "client_name": CLIENT_NAME,
                 "content_type": "file",
                 "file_name": file_name,
                 "file_data": file_data,
@@ -332,6 +336,7 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
             
             response = http_session.post(f"{SERVER_URL}/upload", json={
                 "device_id": DEVICE_ID,
+                "client_name": CLIENT_NAME,
                 "content_type": "text",
                 "content": text
             }, timeout=3)
@@ -350,10 +355,14 @@ def upload_clipboard(tray_app, content_type="text", text="", file_path=None, ima
     except Exception as e:
         pass
 
-def fetch_clipboard():
+def fetch_clipboard(last_sync_time=None):
     """从服务端拉取最新内容"""
     try:
-        r = http_session.get(f"{SERVER_URL}/fetch", timeout=3)
+        params = {}
+        if last_sync_time:
+            params["last_sync_time"] = last_sync_time
+        
+        r = http_session.get(f"{SERVER_URL}/fetch", params=params, timeout=3)
         return r.json()
     except Exception as e:
         print("❌ 拉取失败:", e)
@@ -480,16 +489,28 @@ def clipboard_watcher(tray_app):
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新并写入剪贴板"""
-    global last_sync_time, is_setting_clipboard, last_sync_download_time
+    global last_sync_time, is_setting_clipboard, last_sync_download_time, last_downloaded_file
     
     while not stop_flag:
-        data = fetch_clipboard()
-        if data and data.get("updated_at"):
-            updated_at = data["updated_at"]
-            if (not last_sync_time) or updated_at > last_sync_time:
-                # 跳过自己上传的内容
-                if data.get("device_id") != DEVICE_ID:
+        # 传入last_sync_time，让服务端判断是否需要返回数据
+        data = fetch_clipboard(last_sync_time)
+        
+        if data:
+            # 如果服务端返回 no_update，说明没有新内容，跳过处理
+            if data.get("status") == "no_update":
+                time.sleep(SYNC_INTERVAL)
+                continue
+            
+            # 有新内容，处理更新
+            updated_at = data.get("updated_at")
+            if updated_at:
+                # 检查是否是自己上传的内容
+                if data.get("device_id") == DEVICE_ID:
+                    # 是自己上传的，直接更新时间戳，不处理
+                    last_sync_time = updated_at
+                else:
                     content_type = data.get("content_type", "text")
+                    client_name = data.get("client_name", "未知设备")
                     
                     if content_type == "image":
                         # 处理图片同步
@@ -511,7 +532,7 @@ def sync_from_server(tray_app):
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 图片同步",
-                                        f"已接收: {image_width}x{image_height}\n💡 按 Ctrl+V 可直接粘贴",
+                                        f"已接收到来自[{client_name}]的新内容\n{image_width}x{image_height}\n💡 按 Ctrl+V 可直接粘贴",
                                         QtWidgets.QSystemTrayIcon.Information,
                                         4000
                                     )
@@ -524,8 +545,19 @@ def sync_from_server(tray_app):
                         file_size = data.get("file_size", 0)
                         
                         if file_name and file_data:
+                            # 删除上一次下载的文件
+                            if last_downloaded_file and os.path.exists(last_downloaded_file):
+                                try:
+                                    os.remove(last_downloaded_file)
+                                    print(f"🗑️  已清理上一次的文件: {os.path.basename(last_downloaded_file)}")
+                                except Exception as e:
+                                    print(f"⚠️  清理文件失败: {e}")
+                            
                             saved_path = base64_to_file(file_data, file_name)
                             if saved_path:
+                                # 记录本次下载的文件路径
+                                last_downloaded_file = saved_path
+                                
                                 # 记录下载时间（写入剪贴板之前），用于保护期判断
                                 last_sync_download_time = time.time()
                                 
@@ -536,7 +568,7 @@ def sync_from_server(tray_app):
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 文件同步",
-                                        f"已接收: {file_name}\n💡 按 Ctrl+V 可直接粘贴",
+                                        f"已接收到来自[{client_name}]的新内容\n{file_name}\n💡 按 Ctrl+V 可直接粘贴",
                                         QtWidgets.QSystemTrayIcon.Information,
                                         4000
                                     )
@@ -558,13 +590,15 @@ def sync_from_server(tray_app):
                         if ENABLE_POPUP:
                             tray_app.safe_notify(
                                 "📥 剪贴板同步",
-                                "已接收到来自其他设备的新内容",
+                                f"已接收到来自[{client_name}]的新内容",
                                 QtWidgets.QSystemTrayIcon.Information,
                                 3000
                             )
                         play_sound()
-                
-                last_sync_time = updated_at
+                    
+                    # 处理完成，更新时间戳
+                    last_sync_time = updated_at
+        
         time.sleep(SYNC_INTERVAL)
 
 # =======================
@@ -575,24 +609,39 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     notify_signal = QtCore.pyqtSignal(str, str, int, int)  # title, message, icon, duration
     set_file_signal = QtCore.pyqtSignal(str)  # file_path - 在主线程设置文件到剪贴板
     set_image_signal = QtCore.pyqtSignal(object)  # QImage - 在主线程设置图片到剪贴板
-    set_image_signal = QtCore.pyqtSignal(object)  # QImage - 在主线程设置图片到剪贴板
     
     def __init__(self, icon, parent=None):
         super(ClipboardTrayApp, self).__init__(icon, parent)
         
-        # 关键：先显示托盘图标，Windows需要这样才能显示通知
-        self.show()
+        # 创建托盘图标右键菜单
+        self.menu = QtWidgets.QMenu()
         
-        self.setToolTip(f"📋 {APP_NAME} v{APP_VERSION}")
-        self.menu = QtWidgets.QMenu(parent)
+        # 添加客户端名称（不可点击）
+        client_name_action = self.menu.addAction(f"🏷️  {CLIENT_NAME}")
+        client_name_action.setEnabled(False)  # 设置为禁用状态，不可点击
+        
+        # 添加分隔线
+        self.menu.addSeparator()
+        
+        # 添加退出菜单项
+        exit_action = self.menu.addAction("退出")
+        exit_action.triggered.connect(self.quit_application)
+        
+        # 将菜单关联到托盘图标
+        self.setContextMenu(self.menu)
+        
+        # 设置鼠标悬停提示（显示应用名称和版本）
+        self.setToolTip(f"{APP_NAME} v{APP_VERSION}")
+        
+        # 显示托盘图标（确保可以看到图标和右键菜单）
+        self.show()
         
         # 连接信号到槽函数
         self.notify_signal.connect(self._show_notification)
         self.set_file_signal.connect(self._set_file_to_clipboard)
         self.set_image_signal.connect(self._set_image_to_clipboard)
-        self.set_image_signal.connect(self._set_image_to_clipboard)
         
-        # Windows特定：设置AppUserModelID
+        # Windows特定：设置AppUserModelID（用于通知）
         if platform.system() == "Windows":
             try:
                 import ctypes
@@ -603,27 +652,11 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
             except Exception as e:
                 print(f"⚠️  设置AppUserModelID失败: {e}")
 
-        # 查看当前剪贴板
-        show_action = self.menu.addAction("查看当前剪贴板")
-        show_action.triggered.connect(self.show_clipboard_content)
-
-        # 手动同步
-        sync_action = self.menu.addAction("手动同步")
-        sync_action.triggered.connect(self.manual_sync)
-
-        self.menu.addSeparator()
-
-        # 退出
-        exit_action = self.menu.addAction("退出")
-        exit_action.triggered.connect(self.exit_app)
-
-        self.setContextMenu(self.menu)
-
         # 启动后台线程
         threading.Thread(target=clipboard_watcher, args=(self,), daemon=True).start()
         threading.Thread(target=sync_from_server, args=(self,), daemon=True).start()
 
-        # 延迟显示启动通知（Windows需要等托盘图标完全初始化）
+        # 显示启动通知
         if ENABLE_POPUP:
             QtCore.QTimer.singleShot(500, self._show_startup_notification)
     
@@ -690,33 +723,27 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
     def safe_set_image(self, image):
         """线程安全的图片设置方法"""
         self.set_image_signal.emit(image)
-
-    def show_clipboard_content(self):
-        content = pyperclip.paste()
-        msg = content if len(content) < 300 else content[:300] + "..."
-        QtWidgets.QMessageBox.information(None, "当前剪贴板内容", msg)
-
-    def manual_sync(self):
-        """手动从服务端拉取更新"""
-        data = fetch_clipboard()
-        if data and data.get("content"):
-            pyperclip.copy(data["content"])
-            if ENABLE_POPUP:
-                self.safe_notify("📋 手动同步", "已从服务端更新内容", QtWidgets.QSystemTrayIcon.Information, 2000)
-            play_sound()
-        else:
-            if ENABLE_POPUP:
-                self.safe_notify("📋 手动同步", "未获取到有效数据", QtWidgets.QSystemTrayIcon.Warning, 2000)
-
-    def exit_app(self):
-        global stop_flag
+    
+    def quit_application(self):
+        """退出应用程序"""
+        global stop_flag, last_downloaded_file
+        print("👋 正在退出应用...")
+        
+        # 停止后台线程
         stop_flag = True
-        # 关闭 HTTP Session，释放连接
-        try:
-            http_session.close()
-            print("✅ HTTP 连接已关闭")
-        except Exception as e:
-            print(f"⚠️ 关闭 HTTP 连接时出错: {e}")
+        
+        # 清理最后一次下载的临时文件
+        if last_downloaded_file and os.path.exists(last_downloaded_file):
+            try:
+                os.remove(last_downloaded_file)
+                print(f"🗑️  已清理临时文件: {os.path.basename(last_downloaded_file)}")
+            except Exception as e:
+                print(f"⚠️  清理文件失败: {e}")
+        
+        # 隐藏托盘图标
+        self.hide()
+        
+        # 退出应用程序
         QtWidgets.QApplication.quit()
 
 # =======================
@@ -743,7 +770,7 @@ def main():
             icon = QtGui.QIcon(pixmap)
     
     # 启动前清空剪贴板，避免脏数据触发同步
-    global is_setting_clipboard, last_sync_download_time
+    global is_setting_clipboard, last_sync_download_time, last_downloaded_file
 
     clipboard = QtWidgets.QApplication.clipboard()
     clipboard.clear()
@@ -751,19 +778,19 @@ def main():
 
     is_setting_clipboard = False
     last_sync_download_time = 0
+    last_downloaded_file = None
 
     print("🧹 启动时已清空剪贴板")
 
     tray_app = ClipboardTrayApp(icon)
     
     # 诊断信息
-    print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动")
+    print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动（后台模式）")
+    print(f"🏷️  客户端名称: {CLIENT_NAME}")
     print(f"📱 设备ID: {DEVICE_ID}")
     print(f"🔗 服务端地址: {SERVER_URL}")
     print(f"🔌 HTTP Keep-Alive: 已启用（连接池大小: 10-20）")
     print(f"🖥️  操作系统: {platform.system()}")
-    print(f"⚙️  系统托盘可用: {QtWidgets.QSystemTrayIcon.isSystemTrayAvailable()}")
-    print(f"⚙️  支持通知消息: {tray_app.supportsMessages()}")
     
     # 文件同步配置信息
     if MAX_FILE_SIZE is None:
@@ -773,11 +800,7 @@ def main():
     else:
         print(f"📁 文件同步: 已启用（限制 {MAX_FILE_SIZE/(1024*1024):.1f}MB）")
     
-    if not tray_app.supportsMessages():
-        print("⚠️  警告: 当前系统不支持托盘通知！")
-        print("💡 请检查Windows通知设置:")
-        print("   设置 -> 系统 -> 通知和操作")
-        print("   确保'获取来自应用和其他发送者的通知'已开启")
+    print(f"💡 提示: 使用 Ctrl+C 或任务管理器退出程序")
     
     sys.exit(app.exec_())
 

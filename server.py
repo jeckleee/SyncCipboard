@@ -23,7 +23,8 @@ clipboard_store = {
     "image_height": 0,       # 图片高度
     "image_size": 0,         # 图片大小（字节）
     "updated_at": None,
-    "device_id": None
+    "device_id": None,
+    "client_name": None      # 客户端名称
 }
 
 @app.post("/upload")
@@ -33,6 +34,7 @@ async def upload_clipboard(request: Request):
     
     clipboard_store["content_type"] = content_type
     clipboard_store["device_id"] = data.get("device_id")
+    clipboard_store["client_name"] = data.get("client_name")
     clipboard_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     
     if content_type == "image":
@@ -72,15 +74,28 @@ async def upload_clipboard(request: Request):
     return {"status": "ok", "updated_at": clipboard_store["updated_at"]}
 
 @app.get("/fetch")
-async def fetch_clipboard():
+async def fetch_clipboard(last_sync_time: str = None):
+    """
+    拉取剪贴板内容
+    :param last_sync_time: 客户端最后同步时间，如果服务端没有更新则不返回数据
+    """
+    # 如果客户端提供了last_sync_time，且服务端内容没有更新，则返回no_update状态
+    if last_sync_time and clipboard_store.get("updated_at"):
+        if clipboard_store["updated_at"] <= last_sync_time:
+            return {
+                "status": "no_update",
+                "updated_at": clipboard_store["updated_at"]
+            }
+    
+    # 有更新或首次请求，返回完整数据
     return clipboard_store
 
 @app.get("/status")
 async def status():
-    return {"running": True, "clipboard": clipboard_store}
+    return {"running": True}
 
 def start_server():
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT, access_log=False)
 
 if __name__ == "__main__":
     print(f"📡 服务端启动中... http://{HOST}:{PORT}")
