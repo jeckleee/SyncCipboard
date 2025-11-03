@@ -77,7 +77,7 @@ last_sync_download_time = 0  # 最后一次实际下载内容的本地时间戳�
 last_downloaded_file = None  # 最后一次下载的文件路径（用于清理）
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
-SYNC_PROTECTION_SECONDS = 3  # 同步保护时间（秒）
+SYNC_PROTECTION_SECONDS = 2  # 同步保护时间（秒）
 
 # =======================
 # HTTP Session 配置（启用 Keep-Alive）
