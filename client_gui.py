@@ -532,7 +532,7 @@ def sync_from_server(tray_app):
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 图片同步",
-                                        f"已接收到来自[{client_name}]的新内容\n{image_width}x{image_height}\n💡 按 Ctrl+V 可直接粘贴",
+                                        f"已接收到来自[{client_name}]的图片内容\n{image_width}x{image_height}\n💡 按 Ctrl+V 可直接粘贴",
                                         QtWidgets.QSystemTrayIcon.Information,
                                         4000
                                     )
@@ -568,7 +568,7 @@ def sync_from_server(tray_app):
                                 if ENABLE_POPUP:
                                     tray_app.safe_notify(
                                         "📥 文件同步",
-                                        f"已接收到来自[{client_name}]的新内容\n{file_name}\n💡 按 Ctrl+V 可直接粘贴",
+                                        f"已接收到来自[{client_name}]的文件内容\n{file_name}\n💡 按 Ctrl+V 可直接粘贴",
                                         QtWidgets.QSystemTrayIcon.Information,
                                         4000
                                     )
@@ -590,7 +590,7 @@ def sync_from_server(tray_app):
                         if ENABLE_POPUP:
                             tray_app.safe_notify(
                                 "📥 剪贴板同步",
-                                f"已接收到来自[{client_name}]的新内容",
+                                f"已接收到来自[{client_name}]的文本内容",
                                 QtWidgets.QSystemTrayIcon.Information,
                                 3000
                             )
