@@ -60,6 +60,12 @@ NUITKA_ARGS=(
   --output-dir="$BUILD_DIR"
 )
 
+# 如果图标文件存在，将其作为运行时资源打包（用于托盘图标）
+if [ -n "$APP_ICON_PATH" ] && [ -f "$SCRIPT_DIR/$APP_ICON_PATH" ]; then
+  echo "[info] 打包托盘图标资源: $APP_ICON_PATH"
+  NUITKA_ARGS+=(--include-data-file="$SCRIPT_DIR/$APP_ICON_PATH=$APP_ICON_PATH")
+fi
+
 # 如果配置了应用名称，添加参数
 if [ -n "$APP_DISPLAY_NAME" ]; then
   NUITKA_ARGS+=(--macos-app-name="$APP_DISPLAY_NAME")

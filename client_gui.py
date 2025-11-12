@@ -41,6 +41,32 @@ def get_config_path():
     # 未找到配置文件，返回默认路径
     return "config.ini"
 
+def get_resource_path(relative_path):
+    """获取资源文件路径（兼容打包后的应用）"""
+    if not relative_path:
+        return ""
+    
+    # 优先级1: 可执行文件所在目录（打包后）
+    if getattr(sys, 'frozen', False):
+        # Nuitka 打包后
+        exe_dir = os.path.dirname(sys.executable)
+        resource_path = os.path.join(exe_dir, relative_path)
+        if os.path.exists(resource_path):
+            return resource_path
+    
+    # 优先级2: 当前工作目录
+    if os.path.exists(relative_path):
+        return relative_path
+    
+    # 优先级3: 脚本所在目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    resource_path = os.path.join(script_dir, relative_path)
+    if os.path.exists(resource_path):
+        return resource_path
+    
+    # 未找到资源文件
+    return ""
+
 config = configparser.ConfigParser()
 config_file_path = get_config_path()
 config.read(config_file_path, encoding="utf-8")
@@ -80,6 +106,10 @@ last_downloaded_file = None  # 最后一次下载的文件路径（用于清理�
 stop_flag = False
 is_setting_clipboard = False  # 标志：正在设置剪贴板（防止检测到自己的设置操作）
 SYNC_PROTECTION_SECONDS = 2  # 同步保护时间（秒）
+
+# 上传下载开关
+allow_upload = True  # 允许上传数据
+allow_download = True  # 允许下载数据
 
 # =======================
 # HTTP Session 配置（启用 Keep-Alive）
@@ -372,7 +402,7 @@ def fetch_clipboard(last_sync_time=None):
 
 def clipboard_watcher(tray_app):
     """监听剪贴板变化并上传（带3秒保护期）"""
-    global is_setting_clipboard, last_sync_download_time
+    global is_setting_clipboard, last_sync_download_time, allow_upload
     
     # 用于检测是否真正发生变化的缓存
     last_text = ""
@@ -381,6 +411,11 @@ def clipboard_watcher(tray_app):
 
     while not stop_flag:
         try:
+            # 优先级0：检查是否允许上传
+            if not allow_upload:
+                time.sleep(0.5)
+                continue
+            
             # 优先级1：正在设置剪贴板，跳过
             if is_setting_clipboard:
                 time.sleep(0.3)
@@ -491,9 +526,14 @@ def clipboard_watcher(tray_app):
 
 def sync_from_server(tray_app):
     """定时从服务端拉取更新并写入剪贴板"""
-    global last_sync_time, is_setting_clipboard, last_sync_download_time, last_downloaded_file
+    global last_sync_time, is_setting_clipboard, last_sync_download_time, last_downloaded_file, allow_download
     
     while not stop_flag:
+        # 检查是否允许下载
+        if not allow_download:
+            time.sleep(SYNC_INTERVAL)
+            continue
+        
         # 传入last_sync_time，让服务端判断是否需要返回数据
         data = fetch_clipboard(last_sync_time)
         
@@ -625,6 +665,21 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         # 添加分隔线
         self.menu.addSeparator()
         
+        # 添加上传开关
+        self.upload_action = self.menu.addAction("📤 允许上传数据")
+        self.upload_action.setCheckable(True)
+        self.upload_action.setChecked(allow_upload)
+        self.upload_action.triggered.connect(self.toggle_upload)
+        
+        # 添加下载开关
+        self.download_action = self.menu.addAction("📥 允许下载数据")
+        self.download_action.setCheckable(True)
+        self.download_action.setChecked(allow_download)
+        self.download_action.triggered.connect(self.toggle_download)
+        
+        # 添加分隔线
+        self.menu.addSeparator()
+        
         # 添加退出菜单项
         exit_action = self.menu.addAction("退出")
         exit_action.triggered.connect(self.quit_application)
@@ -726,6 +781,36 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
         """线程安全的图片设置方法"""
         self.set_image_signal.emit(image)
     
+    def toggle_upload(self):
+        """切换上传开关"""
+        global allow_upload
+        allow_upload = self.upload_action.isChecked()
+        status = "已启用" if allow_upload else "已禁用"
+        print(f"📤 上传功能 {status}")
+        
+        if ENABLE_POPUP:
+            self.safe_notify(
+                "📤 上传设置",
+                f"上传功能{status}",
+                QtWidgets.QSystemTrayIcon.Information,
+                2000
+            )
+    
+    def toggle_download(self):
+        """切换下载开关"""
+        global allow_download
+        allow_download = self.download_action.isChecked()
+        status = "已启用" if allow_download else "已禁用"
+        print(f"📥 下载功能 {status}")
+        
+        if ENABLE_POPUP:
+            self.safe_notify(
+                "📥 下载设置",
+                f"下载功能{status}",
+                QtWidgets.QSystemTrayIcon.Information,
+                2000
+            )
+    
     def quit_application(self):
         """退出应用程序"""
         global stop_flag, last_downloaded_file
@@ -761,15 +846,51 @@ def main():
         app.setQuitOnLastWindowClosed(False)  # 防止没有窗口时退出
     
     # 加载应用图标
-    if APP_ICON and os.path.exists(APP_ICON):
-        icon = QtGui.QIcon(APP_ICON)
-    else:
-        icon = QtGui.QIcon.fromTheme("edit-paste")
-        # 如果主题图标不可用，创建一个简单图标
-        if icon.isNull():
-            pixmap = QtGui.QPixmap(32, 32)
-            pixmap.fill(QtGui.QColor(30, 144, 255))
+    icon = None
+    if APP_ICON:
+        # 获取图标文件的实际路径（兼容打包后）
+        icon_path = get_resource_path(APP_ICON)
+        if icon_path and os.path.exists(icon_path):
+            try:
+                # macOS 特殊处理：.icns 需要转换为适合托盘的格式
+                if platform.system() == "Darwin" and icon_path.endswith('.icns'):
+                    # 尝试从 .icns 加载并缩放到合适的托盘尺寸
+                    icon = QtGui.QIcon(icon_path)
+                    if not icon.isNull():
+                        # 为托盘创建适当大小的 pixmap (22x22 在 macOS 上效果较好)
+                        pixmap = icon.pixmap(44, 44)
+                        icon = QtGui.QIcon(pixmap)
+                        print(f"✅ 已加载 macOS 托盘图标: {icon_path}")
+                else:
+                    icon = QtGui.QIcon(icon_path)
+                    print(f"✅ 已加载托盘图标: {icon_path}")
+            except Exception as e:
+                print(f"⚠️  加载图标失败: {e}")
+                icon = None
+        else:
+            print(f"⚠️  图标文件不存在: {APP_ICON}")
+    
+    # 如果图标加载失败，使用备用方案
+    if icon is None or icon.isNull():
+        print("⚠️  使用默认图标")
+        if platform.system() == "Darwin":
+            # macOS：创建一个简单的彩色圆形图标（22x22）
+            pixmap = QtGui.QPixmap(44, 44)
+            pixmap.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(pixmap)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            painter.setBrush(QtGui.QColor(30, 144, 255))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(2, 2, 18, 18)
+            painter.end()
             icon = QtGui.QIcon(pixmap)
+        else:
+            # Windows/Linux：尝试主题图标或创建方形图标
+            icon = QtGui.QIcon.fromTheme("edit-paste")
+            if icon.isNull():
+                pixmap = QtGui.QPixmap(32, 32)
+                pixmap.fill(QtGui.QColor(30, 144, 255))
+                icon = QtGui.QIcon(pixmap)
     
     # 启动前清空剪贴板，避免脏数据触发同步
     global is_setting_clipboard, last_sync_download_time, last_downloaded_file
