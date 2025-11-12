@@ -8,6 +8,7 @@ config = configparser.ConfigParser()
 config.read("config.ini", encoding="utf-8")
 HOST = config.get("server", "host", fallback="0.0.0.0")
 PORT = config.getint("server", "port", fallback=8000)
+URL_PREFIX = config.get("server", "url_prefix", fallback="")
 
 app = FastAPI()
 
@@ -27,7 +28,7 @@ clipboard_store = {
     "client_name": None      # 客户端名称
 }
 
-@app.post("/upload")
+@app.post(f"{URL_PREFIX}/upload")
 async def upload_clipboard(request: Request):
     data = await request.json()
     content_type = data.get("content_type", "text")
@@ -73,7 +74,7 @@ async def upload_clipboard(request: Request):
     
     return {"status": "ok", "updated_at": clipboard_store["updated_at"]}
 
-@app.get("/fetch")
+@app.get(f"{URL_PREFIX}/fetch")
 async def fetch_clipboard(last_sync_time: str = None):
     """
     拉取剪贴板内容
@@ -90,7 +91,7 @@ async def fetch_clipboard(last_sync_time: str = None):
     # 有更新或首次请求，返回完整数据
     return clipboard_store
 
-@app.get("/status")
+@app.get(f"{URL_PREFIX}/status")
 async def status():
     return {"running": True}
 
@@ -98,5 +99,5 @@ def start_server():
     uvicorn.run(app, host=HOST, port=PORT, access_log=False)
 
 if __name__ == "__main__":
-    print(f"📡 服务端启动中... http://{HOST}:{PORT}")
+    print(f"📡 服务端启动中... http://{HOST}:{PORT}{URL_PREFIX}")
     start_server()

@@ -53,10 +53,12 @@ APP_ICON = config.get("global", "app_icon", fallback="")
 
 # 客户端配置
 CLIENT_NAME = config.get("client", "client_name", fallback=platform.node()).strip('"\'')
-SERVER_URL = config.get("client", "server_url", fallback="http://127.0.0.1:8000")
+URL_PREFIX = config.get("server", "url_prefix", fallback="")
+SERVER_URL = f"{config.get('client', 'server_url', fallback='http://127.0.0.1:8000')}{URL_PREFIX}"
 SYNC_INTERVAL = config.getfloat("client", "sync_interval", fallback=1.0)
 ENABLE_SOUND = config.getboolean("client", "enable_sound", fallback=True)
 ENABLE_POPUP = config.getboolean("client", "enable_popup", fallback=True)
+
 
 # 文件同步配置
 max_file_size_str = config.get("client", "max_file_size", fallback="false").strip().lower()
