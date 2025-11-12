@@ -39,11 +39,28 @@ echo.
 
 REM 检查是否存在图标文件
 set ICON_PARAM=
+set ICON_DATA_PARAM=
 if exist "icon.ico" (
     set ICON_PARAM=--windows-icon-from-ico=icon.ico
-    echo       检测到图标文件: icon.ico
+    set ICON_DATA_PARAM=--include-data-files=icon.ico=icon.ico
+    echo       ✅ 检测到图标文件: icon.ico （将打包进 exe）
 ) else (
-    echo       未找到 icon.ico，将使用默认图标
+    echo       ⚠️  未找到 icon.ico，将使用默认图标
+    echo       💡 提示: 运行 python convert_icon.py 可将 app.icns 转换为 icon.ico
+)
+
+REM 追加打包 app.ico（如存在，用于代码的候选加载名）
+set APP_ICO_DATA_PARAM=
+if exist "app.ico" (
+    set APP_ICO_DATA_PARAM=--include-data-files=app.ico=app.ico
+    echo       📦 追加打包: app.ico
+)
+
+REM 追加打包 app.icns（作为回退资源）
+set ICNS_DATA_PARAM=
+if exist "app.icns" (
+    set ICNS_DATA_PARAM=--include-data-files=app.icns=app.icns
+    echo       📦 追加打包: app.icns
 )
 
 REM 使用 MinGW64 编译器（Nuitka 会自动下载，无需安装 Visual Studio）
@@ -61,6 +78,9 @@ python -m nuitka ^
     --product-version=1.0.0 ^
     --file-description="跨设备剪贴板同步客户端" ^
     %ICON_PARAM% ^
+    %ICON_DATA_PARAM% ^
+    %APP_ICO_DATA_PARAM% ^
+    %ICNS_DATA_PARAM% ^
     client_gui.py
 
 if errorlevel 1 (
@@ -82,6 +102,16 @@ if exist "SyncClipboard.exe" (
         echo       已复制配置文件模板
     )
     
+    REM 复制图标文件到 dist 目录（用于系统托盘显示）
+    if exist "icon.ico" (
+        copy /y "icon.ico" "dist\icon.ico"
+        echo       已复制图标文件 icon.ico
+    )
+    if exist "app.ico" (
+        copy /y "app.ico" "dist\app.ico"
+        echo       已复制图标文件 app.ico
+    )
+    
     echo.
     echo ========================================
     echo   ✅ 打包完成！
@@ -92,7 +122,9 @@ if exist "SyncClipboard.exe" (
     echo.
     echo 💡 使用说明:
     echo   1. 将 SyncClipboard.exe 和 config.ini 放在同一目录
-    echo   2. 编辑 config.ini 配置服务器地址
+    echo   2. 编辑 config.ini 配置服务器地址和图标文件
+    echo      - Windows 系统需使用 .ico 格式图标
+    echo      - 将图标文件放在 exe 同一目录
     echo   3. 双击运行 SyncClipboard.exe
     echo.
 ) else (

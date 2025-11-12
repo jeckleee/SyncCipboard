@@ -18,6 +18,78 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 # =======================
 # 读取配置文件
 # =======================
+SINGLE_INSTANCE_MUTEX = None
+
+def ensure_single_instance_windows(app_name: str) -> bool:
+    """Windows: 通过命名互斥量确保单实例运行"""
+    if platform.system() != "Windows":
+        return True
+    try:
+        import ctypes
+        import ctypes.wintypes as wintypes
+        kernel32 = ctypes.windll.kernel32
+        mutex_name = f"Global\\{app_name}_SingleInstance_Mutex"
+        # CreateMutexW(lpMutexAttributes, bInitialOwner, lpName)
+        handle = kernel32.CreateMutexW(None, False, wintypes.LPCWSTR(mutex_name))
+        # GetLastError == 183 (ERROR_ALREADY_EXISTS) 表示已存在
+        last_error = kernel32.GetLastError()
+        if last_error == 183 or handle == 0:
+            return False
+        # 保存句柄，防止被 GC 回收
+        global SINGLE_INSTANCE_MUTEX
+        SINGLE_INSTANCE_MUTEX = handle
+        return True
+    except Exception:
+        # 出现异常时不阻止运行（降级）
+        return True
+def ensure_qt_plugin_paths():
+    """确保 Qt 插件路径包含 imageformats/iconengines，避免 ICO/ICNS 无法解码"""
+    try:
+        candidates = []
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.extend([
+            os.path.join(base_dir, "qt-plugins"),
+            os.path.join(base_dir, "PyQt5", "qt-plugins"),
+            os.path.join(base_dir, "PyQt5", "Qt", "plugins"),
+        ])
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(sys.executable)
+            candidates.extend([
+                os.path.join(exe_dir, "qt-plugins"),
+                os.path.join(exe_dir, "PyQt5", "qt-plugins"),
+                os.path.join(exe_dir, "PyQt5", "Qt", "plugins"),
+            ])
+        for p in list(candidates):
+            candidates.append(os.path.join(p, "imageformats"))
+            candidates.append(os.path.join(p, "iconengines"))
+        seen = set()
+        for p in candidates:
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            if os.path.isdir(p) and p not in QtCore.QCoreApplication.libraryPaths():
+                QtCore.QCoreApplication.addLibraryPath(p)
+    except Exception:
+        pass
+
+
+def load_icon_with_reader(file_path):
+    """使用 QImageReader 读取图像并构造 QIcon（作为 QIcon 失败时的回退）"""
+    try:
+        reader = QtGui.QImageReader(file_path)
+        image = reader.read()
+        if image and not image.isNull():
+            pixmap = QtGui.QPixmap.fromImage(image)
+            if not pixmap.isNull():
+                icon = QtGui.QIcon()
+                # 提供多个常见尺寸，提升托盘显示适配性
+                for size in (16, 20, 22, 24, 32, 40, 48, 64):
+                    icon.addPixmap(pixmap.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                return icon
+    except Exception as _e:
+        pass
+    return None
+
 def get_config_path():
     """获取配置文件路径（兼容打包后的应用）"""
     # 优先级1: 可执行文件所在目录（打包后）
@@ -46,23 +118,33 @@ def get_resource_path(relative_path):
     if not relative_path:
         return ""
     
-    # 优先级1: 可执行文件所在目录（打包后）
+    # 优先级1: Nuitka 单文件打包后的临时解压目录
     if getattr(sys, 'frozen', False):
-        # Nuitka 打包后
+        # Nuitka onefile 模式：资源文件被解压到脚本所在的临时目录
+        # __file__ 指向临时解压目录中的脚本位置
+        try:
+            bundle_dir = os.path.dirname(os.path.abspath(__file__))
+            resource_path = os.path.join(bundle_dir, relative_path)
+            if os.path.exists(resource_path):
+                return os.path.abspath(resource_path)
+        except Exception:
+            pass
+        
+        # 备选方案：exe 所在目录（用于外部资源文件）
         exe_dir = os.path.dirname(sys.executable)
         resource_path = os.path.join(exe_dir, relative_path)
         if os.path.exists(resource_path):
-            return resource_path
+            return os.path.abspath(resource_path)
     
     # 优先级2: 当前工作目录
     if os.path.exists(relative_path):
-        return relative_path
+        return os.path.abspath(relative_path)
     
     # 优先级3: 脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     resource_path = os.path.join(script_dir, relative_path)
     if os.path.exists(resource_path):
-        return resource_path
+        return os.path.abspath(resource_path)
     
     # 未找到资源文件
     return ""
@@ -837,10 +919,18 @@ class ClipboardTrayApp(QtWidgets.QSystemTrayIcon):
 # 主入口
 # =======================
 def main():
+    # Windows 单实例保护（尽早执行，避免多开）
+    if not ensure_single_instance_windows(APP_NAME):
+        # 已有实例在运行，直接退出
+        return 0
+
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     
+    # 确保 Qt 插件路径就绪（onefile 场景尤为重要）
+    ensure_qt_plugin_paths()
+
     # Windows特定设置
     if platform.system() == "Windows":
         app.setQuitOnLastWindowClosed(False)  # 防止没有窗口时退出
@@ -848,27 +938,82 @@ def main():
     # 加载应用图标
     icon = None
     if APP_ICON:
-        # 获取图标文件的实际路径（兼容打包后）
-        icon_path = get_resource_path(APP_ICON)
-        if icon_path and os.path.exists(icon_path):
-            try:
-                # macOS 特殊处理：.icns 需要转换为适合托盘的格式
-                if platform.system() == "Darwin" and icon_path.endswith('.icns'):
-                    # 尝试从 .icns 加载并缩放到合适的托盘尺寸
-                    icon = QtGui.QIcon(icon_path)
-                    if not icon.isNull():
-                        # 为托盘创建适当大小的 pixmap (22x22 在 macOS 上效果较好)
-                        pixmap = icon.pixmap(44, 44)
-                        icon = QtGui.QIcon(pixmap)
-                        print(f"✅ 已加载 macOS 托盘图标: {icon_path}")
-                else:
-                    icon = QtGui.QIcon(icon_path)
-                    print(f"✅ 已加载托盘图标: {icon_path}")
-            except Exception as e:
-                print(f"⚠️  加载图标失败: {e}")
-                icon = None
+        # Windows 系统：优先使用 .ico 格式图标
+        if platform.system() == "Windows":
+            # 尝试将 .icns 扩展名替换为 .ico
+            if APP_ICON.endswith('.icns'):
+                candidate_names = [
+                    "icon.ico",
+                    os.path.basename(APP_ICON).replace('.icns', '.ico'),
+                ]
+                loaded = False
+                for candidate in candidate_names:
+                    icon_path = get_resource_path(candidate)
+                    
+                    if icon_path and os.path.exists(icon_path):
+                        try:
+                            tmp_icon = QtGui.QIcon(icon_path)
+                            if tmp_icon.isNull():
+                                # 使用 QImageReader 回退读取
+                                fallback = load_icon_with_reader(icon_path)
+                                if fallback and not fallback.isNull():
+                                    icon = fallback
+                                    loaded = True
+                                    break
+                                else:
+                                    continue
+                            else:
+                                icon = tmp_icon
+                                loaded = True
+                                break
+                        except Exception as e:
+                            continue
+
+                # 回退方案：如果 .ico 加载失败，尝试直接加载配置中的 APP_ICON（可能是 .icns，开发环境可用）
+                if not loaded and APP_ICON:
+                    try:
+                        fallback_icon_path = get_resource_path(APP_ICON)
+                        if fallback_icon_path and os.path.exists(fallback_icon_path):
+                            fb = QtGui.QIcon(fallback_icon_path)
+                            if fb.isNull():
+                                fb2 = load_icon_with_reader(fallback_icon_path)
+                                if fb2 and not fb2.isNull():
+                                    icon = fb2
+                                else:
+                                    pass
+                            else:
+                                icon = fb
+                        else:
+                            pass
+                    except Exception as e:
+                        pass
+            else:
+                icon_path = get_resource_path(APP_ICON)
+                if icon_path and os.path.exists(icon_path):
+                    try:
+                        icon = QtGui.QIcon(icon_path)
+                    except Exception as e:
+                        icon = None
+        
+        # macOS/Linux：使用配置文件中指定的图标
         else:
-            print(f"⚠️  图标文件不存在: {APP_ICON}")
+            icon_path = get_resource_path(APP_ICON)
+            if icon_path and os.path.exists(icon_path):
+                try:
+                    # macOS 特殊处理：.icns 需要转换为适合托盘的格式
+                    if platform.system() == "Darwin" and icon_path.endswith('.icns'):
+                        # 尝试从 .icns 加载并缩放到合适的托盘尺寸
+                        icon = QtGui.QIcon(icon_path)
+                        if not icon.isNull():
+                            # 为托盘创建适当大小的 pixmap (22x22 在 macOS 上效果较好)
+                            pixmap = icon.pixmap(44, 44)
+                            icon = QtGui.QIcon(pixmap)
+                    else:
+                        icon = QtGui.QIcon(icon_path)
+                except Exception as e:
+                    icon = None
+            else:
+                pass
     
     # 如果图标加载失败，使用备用方案
     if icon is None or icon.isNull():
@@ -891,6 +1036,15 @@ def main():
                 pixmap = QtGui.QPixmap(32, 32)
                 pixmap.fill(QtGui.QColor(30, 144, 255))
                 icon = QtGui.QIcon(pixmap)
+
+    # 设置应用图标到 QApplication（在某些 Windows 环境可提升托盘图标稳定性）
+    try:
+        if icon and not icon.isNull():
+            app.setWindowIcon(icon)
+        else:
+            pass
+    except Exception as _e:
+        pass
     
     # 启动前清空剪贴板，避免脏数据触发同步
     global is_setting_clipboard, last_sync_download_time, last_downloaded_file
@@ -906,6 +1060,11 @@ def main():
     print("🧹 启动时已清空剪贴板")
 
     tray_app = ClipboardTrayApp(icon)
+    try:
+        if icon and not icon.isNull():
+            tray_app.setIcon(icon)  # 再次显式设置一遍，增强稳定性
+    except Exception as _e:
+        pass
     
     # 诊断信息
     print(f"🧩 {APP_NAME} v{APP_VERSION} 已启动（后台模式）")
