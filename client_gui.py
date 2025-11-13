@@ -11,8 +11,6 @@ import configparser
 import base64
 import tempfile
 from datetime import datetime
-from pathlib import Path
-from io import BytesIO
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 # =======================
@@ -89,6 +87,58 @@ def load_icon_with_reader(file_path):
     except Exception as _e:
         pass
     return None
+
+def resolve_app_icon():
+    """根据平台和配置解析应用图标，保持现有逻辑不变（Windows 优先 ico，失败回退 icns）。"""
+    if not APP_ICON:
+        return None
+    try:
+        if platform.system() == "Windows":
+            # 先尝试 ico（优先 icon.ico，再尝试与 APP_ICON 同名的 .ico）
+            if APP_ICON.endswith(".icns"):
+                candidate_names = [
+                    "icon.ico",
+                    os.path.basename(APP_ICON).replace(".icns", ".ico"),
+                ]
+                for candidate in candidate_names:
+                    icon_path = get_resource_path(candidate)
+                    if icon_path and os.path.exists(icon_path):
+                        icon_try = QtGui.QIcon(icon_path)
+                        if icon_try.isNull():
+                            icon_try = load_icon_with_reader(icon_path)
+                        if icon_try and not icon_try.isNull():
+                            return icon_try
+                # 回退：尝试直接加载 icns
+                fallback_icon_path = get_resource_path(APP_ICON)
+                if fallback_icon_path and os.path.exists(fallback_icon_path):
+                    icon_try = QtGui.QIcon(fallback_icon_path)
+                    if icon_try.isNull():
+                        icon_try = load_icon_with_reader(fallback_icon_path)
+                    if icon_try and not icon_try.isNull():
+                        return icon_try
+                return None
+            else:
+                # APP_ICON 非 icns，按路径直接加载
+                icon_path = get_resource_path(APP_ICON)
+                if icon_path and os.path.exists(icon_path):
+                    icon_try = QtGui.QIcon(icon_path)
+                    return icon_try if not icon_try.isNull() else None
+                return None
+        else:
+            # macOS/Linux
+            icon_path = get_resource_path(APP_ICON)
+            if icon_path and os.path.exists(icon_path):
+                if platform.system() == "Darwin" and icon_path.endswith(".icns"):
+                    icon_try = QtGui.QIcon(icon_path)
+                    if not icon_try.isNull():
+                        pixmap = icon_try.pixmap(44, 44)
+                        return QtGui.QIcon(pixmap)
+                    return None
+                icon_try = QtGui.QIcon(icon_path)
+                return icon_try if not icon_try.isNull() else None
+            return None
+    except Exception:
+        return None
 
 def get_config_path():
     """获取配置文件路径（兼容打包后的应用）"""
@@ -324,8 +374,6 @@ def get_clipboard_image():
 def image_to_base64(image):
     """将QImage转换为Base64编码的PNG"""
     try:
-        buffer = BytesIO()
-        # 转换为PNG格式
         byte_array = QtCore.QByteArray()
         buffer_qt = QtCore.QBuffer(byte_array)
         buffer_qt.open(QtCore.QIODevice.WriteOnly)
@@ -491,6 +539,16 @@ def clipboard_watcher(tray_app):
     last_files = []
     last_image_data = None
 
+    def skip_recent_download_guard() -> bool:
+        """距离上次下载过短则跳过上传，并按原样打印提示与等待。"""
+        if last_sync_download_time > 0:
+            elapsed = time.time() - last_sync_download_time
+            if elapsed < SYNC_PROTECTION_SECONDS:
+                print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
+                time.sleep(0.5)
+                return True
+        return False
+
     while not stop_flag:
         try:
             # 优先级0：检查是否允许上传
@@ -511,13 +569,8 @@ def clipboard_watcher(tray_app):
                 last_text = ""
                 last_image_data = None
                 
-                # 检查是否需要上传（距离上次下载是否超过3秒）
-                if last_sync_download_time > 0:
-                    elapsed = time.time() - last_sync_download_time
-                    if elapsed < SYNC_PROTECTION_SECONDS:
-                        print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
-                        time.sleep(0.5)
-                        continue
+                if skip_recent_download_guard():
+                    continue
                 
                 file_path = current_files[0]
                 has_directory = any(os.path.isdir(path) for path in current_files)
@@ -561,13 +614,8 @@ def clipboard_watcher(tray_app):
                         last_text = ""
                         last_files = []
                         
-                        # 检查是否需要上传（距离上次下载是否超过3秒）
-                        if last_sync_download_time > 0:
-                            elapsed = time.time() - last_sync_download_time
-                            if elapsed < SYNC_PROTECTION_SECONDS:
-                                print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
-                                time.sleep(0.5)
-                                continue
+                        if skip_recent_download_guard():
+                            continue
                         
                         image_size = len(image_data)
                         if MAX_FILE_SIZE and (MAX_FILE_SIZE == 0 or image_size <= MAX_FILE_SIZE):
@@ -591,13 +639,8 @@ def clipboard_watcher(tray_app):
                         last_files = []
                         last_image_data = None
                         
-                        # 检查是否需要上传（距离上次下载是否超过3秒）
-                        if last_sync_download_time > 0:
-                            elapsed = time.time() - last_sync_download_time
-                            if elapsed < SYNC_PROTECTION_SECONDS:
-                                print(f"🛡️ 距离上次下载 {elapsed:.1f}s < {SYNC_PROTECTION_SECONDS}s，跳过上传")
-                                time.sleep(0.5)
-                                continue
+                        if skip_recent_download_guard():
+                            continue
                         
                         upload_clipboard(tray_app, content_type="text", text=current_text)
         
@@ -936,84 +979,7 @@ def main():
         app.setQuitOnLastWindowClosed(False)  # 防止没有窗口时退出
     
     # 加载应用图标
-    icon = None
-    if APP_ICON:
-        # Windows 系统：优先使用 .ico 格式图标
-        if platform.system() == "Windows":
-            # 尝试将 .icns 扩展名替换为 .ico
-            if APP_ICON.endswith('.icns'):
-                candidate_names = [
-                    "icon.ico",
-                    os.path.basename(APP_ICON).replace('.icns', '.ico'),
-                ]
-                loaded = False
-                for candidate in candidate_names:
-                    icon_path = get_resource_path(candidate)
-                    
-                    if icon_path and os.path.exists(icon_path):
-                        try:
-                            tmp_icon = QtGui.QIcon(icon_path)
-                            if tmp_icon.isNull():
-                                # 使用 QImageReader 回退读取
-                                fallback = load_icon_with_reader(icon_path)
-                                if fallback and not fallback.isNull():
-                                    icon = fallback
-                                    loaded = True
-                                    break
-                                else:
-                                    continue
-                            else:
-                                icon = tmp_icon
-                                loaded = True
-                                break
-                        except Exception as e:
-                            continue
-
-                # 回退方案：如果 .ico 加载失败，尝试直接加载配置中的 APP_ICON（可能是 .icns，开发环境可用）
-                if not loaded and APP_ICON:
-                    try:
-                        fallback_icon_path = get_resource_path(APP_ICON)
-                        if fallback_icon_path and os.path.exists(fallback_icon_path):
-                            fb = QtGui.QIcon(fallback_icon_path)
-                            if fb.isNull():
-                                fb2 = load_icon_with_reader(fallback_icon_path)
-                                if fb2 and not fb2.isNull():
-                                    icon = fb2
-                                else:
-                                    pass
-                            else:
-                                icon = fb
-                        else:
-                            pass
-                    except Exception as e:
-                        pass
-            else:
-                icon_path = get_resource_path(APP_ICON)
-                if icon_path and os.path.exists(icon_path):
-                    try:
-                        icon = QtGui.QIcon(icon_path)
-                    except Exception as e:
-                        icon = None
-        
-        # macOS/Linux：使用配置文件中指定的图标
-        else:
-            icon_path = get_resource_path(APP_ICON)
-            if icon_path and os.path.exists(icon_path):
-                try:
-                    # macOS 特殊处理：.icns 需要转换为适合托盘的格式
-                    if platform.system() == "Darwin" and icon_path.endswith('.icns'):
-                        # 尝试从 .icns 加载并缩放到合适的托盘尺寸
-                        icon = QtGui.QIcon(icon_path)
-                        if not icon.isNull():
-                            # 为托盘创建适当大小的 pixmap (22x22 在 macOS 上效果较好)
-                            pixmap = icon.pixmap(44, 44)
-                            icon = QtGui.QIcon(pixmap)
-                    else:
-                        icon = QtGui.QIcon(icon_path)
-                except Exception as e:
-                    icon = None
-            else:
-                pass
+    icon = resolve_app_icon()
     
     # 如果图标加载失败，使用备用方案
     if icon is None or icon.isNull():
